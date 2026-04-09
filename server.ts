@@ -58,6 +58,7 @@ let myToken: string | null = process.env.AGENT_HIVE_TOKEN ?? null;
 let myCwd = process.cwd();
 let myGitRoot: string | null = null;
 let myChannel = "main";
+let myRole = "";
 
 // --- Broker communication ---
 
@@ -682,7 +683,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         return { content: [{ type: "text" as const, text: "Not registered with broker yet" }], isError: true };
       }
       try {
-        const result = await brokerFetch<{ ok: boolean; channel: string; error?: string }>(
+        const result = await brokerFetch<{ ok: boolean; channel: string; role: string; memory_keys: string[]; error?: string }>(
           "/join-channel",
           { id: myId, channel }
         );
@@ -690,8 +691,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           return { content: [{ type: "text" as const, text: `Failed to join channel: ${result.error}` }], isError: true };
         }
         myChannel = result.channel;
+        myRole = result.role ?? "";
         await saveChannel(myGitRoot, myCwd, result.channel);
-        return { content: [{ type: "text" as const, text: `Joined channel #${result.channel}` }] };
+        const parts = [`Joined channel #${result.channel}`];
+        if (result.role) parts.push(`\n[Your role in this channel]\n${result.role}`);
+        if (result.memory_keys.length > 0) parts.push(`\n[Channel memory keys: ${result.memory_keys.join(", ")}]`);
+        return { content: [{ type: "text" as const, text: parts.join("") }] };
       } catch (e) {
         return {
           content: [{ type: "text" as const, text: `Error joining channel: ${e instanceof Error ? e.message : String(e)}` }],
@@ -844,6 +849,9 @@ async function pollAndPushMessages() {
     });
 
     for (const msg of result.messages) {
+      // Skip internal system messages (role/memory delivery — now handled via API responses)
+      if (msg.from_id === "system") continue;
+
       let fromSummary = "";
       let fromCwd = "";
       let fromHarness = "";
@@ -983,12 +991,14 @@ async function main() {
   const savedChannel = await loadSavedChannel(myGitRoot, myCwd);
   if (savedChannel && savedChannel !== "main") {
     try {
-      const result = await brokerFetch<{ ok: boolean; channel: string; error?: string }>(
+      const result = await brokerFetch<{ ok: boolean; channel: string; role: string; memory_keys: string[]; error?: string }>(
         "/join-channel", { id: myId, channel: savedChannel }
       );
       if (result.ok) {
         myChannel = savedChannel;
         log(`Rejoined saved channel #${savedChannel}`);
+        if (result.role) log(`Role: ${result.role.slice(0, 80)}`);
+        if (result.memory_keys.length > 0) log(`Channel memory keys: ${result.memory_keys.join(", ")}`);
       } else {
         log(`Saved channel #${savedChannel} no longer exists, falling back to #main`);
         await saveChannel(myGitRoot, myCwd, "main");
@@ -1020,11 +1030,27 @@ async function main() {
   // 8. Start polling for inbound messages
   const pollTimer = setInterval(pollAndPushMessages, POLL_INTERVAL_MS);
 
-  // 9. Start heartbeat
+  // 9. Start heartbeat — also detects role changes pushed by admin
   const heartbeatTimer = setInterval(async () => {
     if (myId) {
       try {
-        await brokerFetch("/heartbeat", { id: myId });
+        const hb = await brokerFetch<{ role: string }>("/heartbeat", { id: myId });
+        if (hb.role !== myRole) {
+          const prev = myRole;
+          myRole = hb.role;
+          if (hb.role) {
+            log(`Role updated: ${hb.role.slice(0, 80)}`);
+            await mcp.notification({
+              method: "notifications/claude/channel",
+              params: {
+                content: `[Your role in #${myChannel} was updated by the administrator]\n${hb.role}`,
+                meta: { from_id: "agent-hive", from_summary: "role update", from_cwd: "", from_harness: "agent-hive", sent_at: new Date().toISOString() },
+              },
+            });
+          } else if (prev) {
+            log("Role cleared");
+          }
+        }
       } catch {}
     }
   }, HEARTBEAT_INTERVAL_MS);

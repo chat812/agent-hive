@@ -17163,7 +17163,7 @@ function Login({ onLogin }) {
         body: "{}"
       });
       if (adminRes.ok) {
-        localStorage.setItem("claude-peers-token", token.trim());
+        localStorage.setItem("agent-hive-token", token.trim());
         onLogin(token.trim());
       } else {
         setError("Invalid master key");
@@ -17178,7 +17178,7 @@ function Login({ onLogin }) {
       className: "login-box",
       children: [
         /* @__PURE__ */ jsx_dev_runtime.jsxDEV("h1", {
-          children: "claude-peers"
+          children: "Agent Hive"
         }, undefined, false, undefined, this),
         /* @__PURE__ */ jsx_dev_runtime.jsxDEV("p", {
           children: "Enter the master key to access the dashboard."
@@ -18168,7 +18168,7 @@ function Dashboard({ masterToken }) {
               /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
                 className: `status-dot ${connected ? "connected" : "disconnected"}`
               }, undefined, false, undefined, this),
-              "claude-peers"
+              "Agent Hive"
             ]
           }, undefined, true, undefined, this),
           /* @__PURE__ */ jsx_dev_runtime.jsxDEV(ChannelPanel, {
@@ -18291,7 +18291,7 @@ function Dashboard({ masterToken }) {
   }, undefined, true, undefined, this);
 }
 function App() {
-  const [masterToken, setMasterToken] = import_react.useState(localStorage.getItem("claude-peers-token"));
+  const [masterToken, setMasterToken] = import_react.useState(localStorage.getItem("agent-hive-token"));
   if (!masterToken) {
     return /* @__PURE__ */ jsx_dev_runtime.jsxDEV(Login, {
       onLogin: setMasterToken

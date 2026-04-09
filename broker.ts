@@ -127,6 +127,14 @@ try {
 } catch {}
 
 db.run(`
+  CREATE TABLE IF NOT EXISTS known_peers (
+    name TEXT NOT NULL,
+    hostname TEXT NOT NULL,
+    PRIMARY KEY (name, hostname)
+  )
+`);
+
+db.run(`
   CREATE TABLE IF NOT EXISTS channel_memory (
     channel TEXT NOT NULL,
     key TEXT NOT NULL,
@@ -215,6 +223,8 @@ const deleteChannelRole = db.prepare("DELETE FROM channel_roles WHERE channel = 
 const clearRoleFromPeers = db.prepare("UPDATE peers SET role = '' WHERE channel = ? AND role = ?");
 const upsertPeerChannelRole = db.prepare("INSERT OR REPLACE INTO peer_channel_roles (name, channel, role) VALUES (?, ?, ?)");
 const selectPeerChannelRole = db.prepare("SELECT role FROM peer_channel_roles WHERE name = ? AND channel = ?");
+const insertKnownPeer = db.prepare("INSERT OR IGNORE INTO known_peers (name, hostname) VALUES (?, ?)");
+const isKnownPeer = db.prepare("SELECT 1 FROM known_peers WHERE name = ? AND hostname = ?");
 const upsertMemory = db.prepare("INSERT OR REPLACE INTO channel_memory (channel, key, value, written_by, written_at) VALUES (?, ?, ?, ?, ?)");
 const selectMemoryKeys = db.prepare("SELECT key, written_by, written_at, length(value) as size FROM channel_memory WHERE channel = ? ORDER BY written_at DESC");
 const selectMemoryEntry = db.prepare("SELECT key, value, written_by, written_at, length(value) as size FROM channel_memory WHERE channel = ? AND key = ?");
@@ -293,45 +303,47 @@ function handleRegister(body: RegisterRequest): RegisterResponse {
     .get(body.name, body.hostname) as { id: string } | null;
   if (existingByName && existingByName.id !== existingByPid?.id) removePeer(existingByName.id);
 
+  const known = isKnownPeer.get(body.name ?? "", body.hostname) as { 1: number } | null;
+
   insertPeer.run(
     id, body.name ?? "", body.pid, body.cwd, body.git_root ?? null, body.tty ?? null,
     body.harness, body.hostname, body.summary, now, now
   );
   insertToken.run(sessionToken, id, now);
 
-  const peer = selectPeerById.get(id) as Peer;
-  broadcast({ type: "peer_pending", peer });
+  if (known) {
+    // Previously approved — auto-approve without requiring dashboard interaction
+    updateStatus.run("approved", id);
+    pushChannelRole(id, "main");
+    const peer = selectPeerById.get(id) as Peer;
+    broadcast({ type: "peer_joined", peer });
+  } else {
+    const peer = selectPeerById.get(id) as Peer;
+    broadcast({ type: "peer_pending", peer });
+  }
 
   return { id, token: sessionToken };
 }
 
-function pushChannelRole(peer_id: string, channel: string): void {
+function pushChannelRole(peer_id: string, channel: string): { role: string; memory_keys: string[] } {
   const peer = selectPeerById.get(peer_id) as Peer | null;
-  if (!peer) return;
+  if (!peer) return { role: "", memory_keys: [] };
   const row = selectPeerChannelRole.get(peer.name, channel) as { role: string } | null;
   const role = row?.role ?? "";
   updatePeerRole.run(role, peer_id);
-
-  const memKeys = (selectMemoryKeyNames.all(channel) as { key: string }[]).map(r => r.key);
-  let text = "";
-  if (role) text += `[Role assigned]\n${role}`;
-  if (memKeys.length > 0) {
-    if (text) text += "\n\n";
-    text += `[Channel memory: ${memKeys.join(", ")}]`;
-  }
-  if (text) {
-    insertMessage.run("system", peer_id, text, new Date().toISOString(), channel);
-  }
+  const memory_keys = (selectMemoryKeyNames.all(channel) as { key: string }[]).map(r => r.key);
+  return { role, memory_keys };
 }
 
-function handleApprove(body: ApproveRejectRequest): { ok: boolean; error?: string } {
+function handleApprove(body: ApproveRejectRequest): { ok: boolean; role: string; memory_keys: string[]; error?: string } {
   const peer = selectPeerById.get(body.peer_id) as Peer | null;
-  if (!peer) return { ok: false, error: "Peer not found" };
+  if (!peer) return { ok: false, role: "", memory_keys: [], error: "Peer not found" };
   updateStatus.run("approved", body.peer_id);
-  pushChannelRole(body.peer_id, peer.channel);
+  insertKnownPeer.run(peer.name, peer.hostname); // remember for future auto-approval
+  const { role, memory_keys } = pushChannelRole(body.peer_id, peer.channel);
   const updated = selectPeerById.get(body.peer_id) as Peer;
   broadcast({ type: "peer_joined", peer: updated });
-  return { ok: true };
+  return { ok: true, role, memory_keys };
 }
 
 function handleReject(body: ApproveRejectRequest): { ok: boolean; error?: string } {
@@ -350,8 +362,10 @@ function handleAuthStatus(token: string): AuthStatusResponse | { error: string }
   return { status: peer.status, peer_id: peer.id };
 }
 
-function handleHeartbeat(body: HeartbeatRequest): void {
+function handleHeartbeat(body: HeartbeatRequest): { role: string } {
   updateLastSeen.run(new Date().toISOString(), body.id);
+  const peer = selectPeerById.get(body.id) as Peer | null;
+  return { role: peer?.role ?? "" };
 }
 
 function handleSetSummary(body: SetSummaryRequest): void {
@@ -486,9 +500,9 @@ function handleLeaveChannel(body: { id: string }): { ok: boolean; error?: string
   return { ok: true };
 }
 
-function handleJoinChannel(body: { id: string; channel: string }): { ok: boolean; channel: string; error?: string } {
+function handleJoinChannel(body: { id: string; channel: string }): { ok: boolean; channel: string; role: string; memory_keys: string[]; error?: string } {
   const peer = selectPeerById.get(body.id) as Peer | null;
-  if (!peer) return { ok: false, channel: "", error: "Peer not found" };
+  if (!peer) return { ok: false, channel: "", role: "", memory_keys: [], error: "Peer not found" };
   const name = sanitizeChannelName(body.channel ?? "main");
 
   // Verify channel exists (main always exists)
@@ -497,7 +511,7 @@ function handleJoinChannel(body: { id: string; channel: string }): { ok: boolean
     updatePeerChannel.run("main", body.id);
     const updated = selectPeerById.get(body.id) as Peer;
     broadcast({ type: "peer_updated", peer: updated });
-    return { ok: false, channel: "main", error: `Channel #${name} does not exist` };
+    return { ok: false, channel: "main", role: "", memory_keys: [], error: `Channel #${name} does not exist` };
   }
 
   // Leave current channel first (broadcast peer_updated from old channel)
@@ -508,10 +522,10 @@ function handleJoinChannel(body: { id: string; channel: string }): { ok: boolean
     broadcast({ type: "peer_updated", peer: leaving });
   }
   updatePeerChannel.run(name, body.id);
-  pushChannelRole(body.id, name);
+  const { role, memory_keys } = pushChannelRole(body.id, name);
   const updated = selectPeerById.get(body.id) as Peer;
   broadcast({ type: "peer_updated", peer: updated });
-  return { ok: true, channel: name };
+  return { ok: true, channel: name, role, memory_keys };
 }
 
 // --- Embed dashboard assets (embedded in binary with --compile) ---
@@ -685,8 +699,7 @@ Bun.serve({
 
       switch (path) {
         case "/heartbeat":
-          handleHeartbeat(body as HeartbeatRequest);
-          return Response.json({ ok: true });
+          return Response.json(handleHeartbeat(body as HeartbeatRequest));
         case "/set-summary":
           handleSetSummary(body as SetSummaryRequest);
           return Response.json({ ok: true });
