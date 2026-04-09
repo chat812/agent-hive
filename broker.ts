@@ -681,9 +681,6 @@ Bun.serve({
         updatePeerRole.run(role ?? "", peer_id);
         const updated = selectPeerById.get(peer_id) as Peer;
         broadcast({ type: "peer_updated", peer: updated });
-        if (role) {
-          insertMessage.run("system", peer_id, `[Role assigned]\n${role}`, new Date().toISOString(), peer.channel);
-        }
         return Response.json({ ok: true });
       }
     }

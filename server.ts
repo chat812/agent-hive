@@ -1027,33 +1027,44 @@ async function main() {
   await mcp.connect(new StdioServerTransport());
   log("MCP connected");
 
+  // Notify agent of current channel on startup
+  await mcp.notification({
+    method: "notifications/claude/channel",
+    params: {
+      content: `[Agent Hive] Connected as ${myName} in #${myChannel}`,
+      meta: { from_id: "agent-hive", from_summary: "startup", from_cwd: "", from_harness: "agent-hive", sent_at: new Date().toISOString() },
+    },
+  });
+
   // 8. Start polling for inbound messages
   const pollTimer = setInterval(pollAndPushMessages, POLL_INTERVAL_MS);
+  pollAndPushMessages(); // immediate first poll
 
   // 9. Start heartbeat — also detects role changes pushed by admin
-  const heartbeatTimer = setInterval(async () => {
-    if (myId) {
-      try {
-        const hb = await brokerFetch<{ role: string }>("/heartbeat", { id: myId });
-        if (hb.role !== myRole) {
-          const prev = myRole;
-          myRole = hb.role;
-          if (hb.role) {
-            log(`Role updated: ${hb.role.slice(0, 80)}`);
-            await mcp.notification({
-              method: "notifications/claude/channel",
-              params: {
-                content: `[Your role in #${myChannel} was updated by the administrator]\n${hb.role}`,
-                meta: { from_id: "agent-hive", from_summary: "role update", from_cwd: "", from_harness: "agent-hive", sent_at: new Date().toISOString() },
-              },
-            });
-          } else if (prev) {
-            log("Role cleared");
-          }
+  async function sendHeartbeat() {
+    if (!myId) return;
+    try {
+      const hb = await brokerFetch<{ role: string }>("/heartbeat", { id: myId });
+      if (hb.role !== myRole) {
+        const prev = myRole;
+        myRole = hb.role;
+        if (hb.role) {
+          log(`Role updated: ${hb.role.slice(0, 80)}`);
+          await mcp.notification({
+            method: "notifications/claude/channel",
+            params: {
+              content: `[Your role in #${myChannel}]\n${hb.role}`,
+              meta: { from_id: "agent-hive", from_summary: "role assignment", from_cwd: "", from_harness: "agent-hive", sent_at: new Date().toISOString() },
+            },
+          });
+        } else if (prev) {
+          log("Role cleared");
         }
-      } catch {}
-    }
-  }, HEARTBEAT_INTERVAL_MS);
+      }
+    } catch {}
+  }
+  sendHeartbeat(); // immediate check on startup
+  const heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
 
   // 10. Clean up on exit
   const cleanup = async () => {
