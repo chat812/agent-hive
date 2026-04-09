@@ -1,0 +1,30 @@
+{
+  "name": "agent-hive",
+  "version": "0.2.0",
+  "description": "Peer discovery and messaging network for AI coding instances",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "broker": "bun broker.ts",
+    "server": "bun server.ts",
+    "test": "bun test",
+    "build": "bun run build:broker && bun run build:server && bun run build:cli",
+    "build:broker": "bun build ui/app.tsx --outfile ui/app.bundle.js --target browser && bun build --compile broker.ts --outfile dist/agent-hive-broker",
+    "build:server": "bun build --compile server.ts --outfile dist/agent-hive-server",
+    "build:cli": "bun build --compile cli.ts --outfile dist/agent-hive-cli"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
+  }
+}
