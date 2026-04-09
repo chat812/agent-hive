@@ -289,6 +289,7 @@ RULES:
 - Never ask the user anything — not for clarification, not for decisions, not for confirmation
 - One task per worker at a time
 - All feedback and decisions go to workers via send_message — user only gets the final summary
+- All work executes on worker machines — do not run commands, edit files, or install anything on this machine unless the user explicitly says "do it here" or "on master"
 - Write all state to memory so you can recover if interrupted
 - When done, stop. Do not invent new tasks.
 
