@@ -128,11 +128,23 @@ try {
 
 db.run(`
   CREATE TABLE IF NOT EXISTS known_peers (
-    name TEXT NOT NULL,
-    hostname TEXT NOT NULL,
-    PRIMARY KEY (name, hostname)
+    hostname TEXT NOT NULL PRIMARY KEY
   )
 `);
+// Migrate old (name, hostname) schema to hostname-only
+try {
+  db.run("ALTER TABLE known_peers DROP COLUMN name");
+} catch {}
+try {
+  // Re-create as hostname-only if old schema had composite PK (can't drop PK in SQLite)
+  const cols = (db.query("PRAGMA table_info(known_peers)").all() as { name: string }[]).map(r => r.name);
+  if (cols.includes("name")) {
+    const hostnames = (db.query("SELECT DISTINCT hostname FROM known_peers").all() as { hostname: string }[]).map(r => r.hostname);
+    db.run("DROP TABLE known_peers");
+    db.run("CREATE TABLE known_peers (hostname TEXT NOT NULL PRIMARY KEY)");
+    for (const h of hostnames) db.run("INSERT OR IGNORE INTO known_peers (hostname) VALUES (?)", [h]);
+  }
+} catch {}
 
 db.run(`
   CREATE TABLE IF NOT EXISTS channel_memory (
@@ -223,8 +235,8 @@ const deleteChannelRole = db.prepare("DELETE FROM channel_roles WHERE channel = 
 const clearRoleFromPeers = db.prepare("UPDATE peers SET role = '' WHERE channel = ? AND role = ?");
 const upsertPeerChannelRole = db.prepare("INSERT OR REPLACE INTO peer_channel_roles (name, channel, role) VALUES (?, ?, ?)");
 const selectPeerChannelRole = db.prepare("SELECT role FROM peer_channel_roles WHERE name = ? AND channel = ?");
-const insertKnownPeer = db.prepare("INSERT OR IGNORE INTO known_peers (name, hostname) VALUES (?, ?)");
-const isKnownPeer = db.prepare("SELECT 1 FROM known_peers WHERE name = ? AND hostname = ?");
+const insertKnownPeer = db.prepare("INSERT OR IGNORE INTO known_peers (hostname) VALUES (?)");
+const isKnownPeer = db.prepare("SELECT 1 FROM known_peers WHERE hostname = ?");
 const upsertMemory = db.prepare("INSERT OR REPLACE INTO channel_memory (channel, key, value, written_by, written_at) VALUES (?, ?, ?, ?, ?)");
 const selectMemoryKeys = db.prepare("SELECT key, written_by, written_at, length(value) as size FROM channel_memory WHERE channel = ? ORDER BY written_at DESC");
 const selectMemoryEntry = db.prepare("SELECT key, value, written_by, written_at, length(value) as size FROM channel_memory WHERE channel = ? AND key = ?");
@@ -303,7 +315,7 @@ function handleRegister(body: RegisterRequest): RegisterResponse {
     .get(body.name, body.hostname) as { id: string } | null;
   if (existingByName && existingByName.id !== existingByPid?.id) removePeer(existingByName.id);
 
-  const known = isKnownPeer.get(body.name ?? "", body.hostname) as { 1: number } | null;
+  const known = isKnownPeer.get(body.hostname) as { 1: number } | null;
 
   insertPeer.run(
     id, body.name ?? "", body.pid, body.cwd, body.git_root ?? null, body.tty ?? null,
@@ -339,7 +351,7 @@ function handleApprove(body: ApproveRejectRequest): { ok: boolean; role: string;
   const peer = selectPeerById.get(body.peer_id) as Peer | null;
   if (!peer) return { ok: false, role: "", memory_keys: [], error: "Peer not found" };
   updateStatus.run("approved", body.peer_id);
-  insertKnownPeer.run(peer.name, peer.hostname); // remember for future auto-approval
+  insertKnownPeer.run(peer.hostname); // remember machine for future auto-approval
   const { role, memory_keys } = pushChannelRole(body.peer_id, peer.channel);
   const updated = selectPeerById.get(body.peer_id) as Peer;
   broadcast({ type: "peer_joined", peer: updated });
