@@ -365,6 +365,7 @@ function handleAuthStatus(token: string): AuthStatusResponse | { error: string }
 function handleHeartbeat(body: HeartbeatRequest): { role: string } {
   updateLastSeen.run(new Date().toISOString(), body.id);
   const peer = selectPeerById.get(body.id) as Peer | null;
+  if (peer) broadcast({ type: "peer_updated", peer });
   return { role: peer?.role ?? "" };
 }
 

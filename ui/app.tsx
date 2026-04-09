@@ -748,9 +748,9 @@ function Dashboard({ masterToken }: { masterToken: string }) {
   const wsRef = useRef<WebSocket | null>(null);
   const [, setTick] = useState(0); // force re-render for timeAgo
 
-  // Tick every 5s to update relative timestamps
+  // Tick every 2s to update activity bubbles and relative timestamps
   useEffect(() => {
-    const t = setInterval(() => setTick((n) => n + 1), 5000);
+    const t = setInterval(() => setTick((n) => n + 1), 2000);
     return () => clearInterval(t);
   }, []);
 
