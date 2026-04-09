@@ -653,12 +653,40 @@ function PixelAvatar({ seed, size = 56 }: { seed: string; size?: number }) {
 
 // --- Peer Avatar Item ---
 
+function peerActivityState(peer: Peer): "offline" | "idle" | "working" | "thinking" {
+  if (peer.status === "offline") return "offline";
+  const age = Date.now() - new Date(peer.last_seen).getTime();
+  if (age < 6_000) return "thinking";       // heartbeat < 6s ago → mid-cycle
+  if (peer.summary && age < 120_000) return "working"; // has summary + seen < 2min
+  return "idle";
+}
+
+function ActivityBubble({ state, summary }: { state: "offline" | "idle" | "working" | "thinking"; summary: string }) {
+  if (state === "offline" || state === "idle") {
+    return <div className="avatar-bubble avatar-bubble-idle">idle</div>;
+  }
+  if (state === "thinking") {
+    return (
+      <div className="avatar-bubble avatar-bubble-thinking">
+        <span className="bubble-dot" />
+        <span className="bubble-dot" />
+        <span className="bubble-dot" />
+      </div>
+    );
+  }
+  // working
+  const snippet = summary.length > 28 ? summary.slice(0, 26) + "…" : summary;
+  return <div className="avatar-bubble avatar-bubble-working">{snippet || "working…"}</div>;
+}
+
 function PeerAvatarItem({ peer }: { peer: Peer }) {
   const [hovered, setHovered] = useState(false);
   const isOffline = peer.status === "offline";
   const label = (peer.name || peer.id).replace(/-\w+$/, ""); // first word only
+  const state = peerActivityState(peer);
   return (
     <div className={`peer-avatar-item${isOffline ? " offline" : ""}`} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}>
+      <ActivityBubble state={state} summary={peer.summary ?? ""} />
       <PixelAvatar seed={peer.name || peer.id} size={48} />
       <span className="peer-avatar-name">{label}</span>
       {hovered && (
