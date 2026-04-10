@@ -17640,6 +17640,23 @@ RULES:
 COMMUNICATION: direct, opinionated, brief. The Executor needs a decision, not a discussion.`
   }
 ];
+var ROLE_BADGE_COLORS = {
+  Master: "#e05c5c",
+  Worker: "#5b8ce6",
+  Executor: "#e0854a",
+  Advisor: "#7dc96b"
+};
+function getRoleIcon(role) {
+  if (!role)
+    return null;
+  const preset = PRESET_ROLES.find((r) => r.prompt === role);
+  if (preset)
+    return { label: preset.label[0], color: ROLE_BADGE_COLORS[preset.label] ?? "#888" };
+  const firstWord = role.trim().split(/\s+/)[0];
+  if (firstWord)
+    return { label: firstWord[0].toUpperCase(), color: "#888" };
+  return null;
+}
 function RolePopup({ peer, masterToken, onClose }) {
   const [prompt, setPrompt] = import_react.useState(peer.role ?? "");
   const [saving, setSaving] = import_react.useState(false);
@@ -18139,14 +18156,20 @@ function peerActivityState(peer) {
   if (peer.status === "offline")
     return "offline";
   const age = Date.now() - new Date(peer.last_seen).getTime();
-  if (age < 6000)
+  if (age < 15000)
     return "thinking";
-  if (peer.summary && age < 120000)
+  if (peer.summary && age < 180000)
     return "working";
   return "idle";
 }
 function ActivityBubble({ state, summary }) {
-  if (state === "offline" || state === "idle") {
+  if (state === "offline") {
+    return /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+      className: "avatar-bubble avatar-bubble-offline",
+      children: "offline"
+    }, undefined, false, undefined, this);
+  }
+  if (state === "idle") {
     return /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
       className: "avatar-bubble avatar-bubble-idle",
       children: "idle"
@@ -18179,6 +18202,7 @@ function PeerAvatarItem({ peer }) {
   const isOffline = peer.status === "offline";
   const label = (peer.name || peer.id).replace(/-\w+$/, "");
   const state = peerActivityState(peer);
+  const roleIcon = getRoleIcon(peer.role ?? "");
   return /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
     className: `peer-avatar-item${isOffline ? " offline" : ""}`,
     onMouseEnter: () => setHovered(true),
@@ -18188,10 +18212,21 @@ function PeerAvatarItem({ peer }) {
         state,
         summary: peer.summary ?? ""
       }, undefined, false, undefined, this),
-      /* @__PURE__ */ jsx_dev_runtime.jsxDEV(PixelAvatar, {
-        seed: peer.name || peer.id,
-        size: 48
-      }, undefined, false, undefined, this),
+      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+        style: { position: "relative", width: 48, height: 48 },
+        children: [
+          /* @__PURE__ */ jsx_dev_runtime.jsxDEV(PixelAvatar, {
+            seed: peer.name || peer.id,
+            size: 48
+          }, undefined, false, undefined, this),
+          roleIcon && /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+            className: "role-icon-badge",
+            style: { background: roleIcon.color },
+            title: peer.role,
+            children: roleIcon.label
+          }, undefined, false, undefined, this)
+        ]
+      }, undefined, true, undefined, this),
       /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
         className: "peer-avatar-name",
         style: { color: peerColor(peer.name || peer.id) },
@@ -18393,7 +18428,9 @@ function Dashboard({ masterToken }) {
   const pendingPeers = peers.filter((p) => p.status === "pending");
   const onlinePeers = peers.filter((p) => p.status === "approved");
   const offlinePeers = peers.filter((p) => p.status === "offline");
-  const approvedPeers = [...onlinePeers, ...offlinePeers];
+  const channelOnline = onlinePeers.filter((p) => p.channel === selectedChannel);
+  const channelOffline = offlinePeers.filter((p) => p.channel === selectedChannel);
+  const channelPeers = [...channelOnline, ...channelOffline];
   return /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
     className: "app-shell",
     children: [
@@ -18471,27 +18508,41 @@ function Dashboard({ masterToken }) {
               /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
                 className: "section-header",
                 children: [
-                  "Active Peers",
+                  /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                    children: "Active Peers"
+                  }, undefined, false, undefined, this),
+                  /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                    className: "channel-badge",
+                    style: { marginLeft: 4 },
+                    children: [
+                      "#",
+                      selectedChannel
+                    ]
+                  }, undefined, true, undefined, this),
                   /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
                     className: "count",
-                    children: onlinePeers.length
+                    children: channelOnline.length
                   }, undefined, false, undefined, this),
-                  offlinePeers.length > 0 && /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                  channelOffline.length > 0 && /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
                     className: "count",
                     style: { opacity: 0.45 },
                     children: [
-                      offlinePeers.length,
+                      channelOffline.length,
                       " offline"
                     ]
                   }, undefined, true, undefined, this)
                 ]
               }, undefined, true, undefined, this),
-              approvedPeers.length === 0 ? /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+              channelPeers.length === 0 ? /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
                 className: "empty",
-                children: "No peers connected yet."
-              }, undefined, false, undefined, this) : /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+                children: [
+                  "No peers in #",
+                  selectedChannel,
+                  "."
+                ]
+              }, undefined, true, undefined, this) : /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
                 className: "peer-avatar-grid",
-                children: approvedPeers.map((p) => /* @__PURE__ */ jsx_dev_runtime.jsxDEV(PeerAvatarItem, {
+                children: channelPeers.map((p) => /* @__PURE__ */ jsx_dev_runtime.jsxDEV(PeerAvatarItem, {
                   peer: p
                 }, p.id, false, undefined, this))
               }, undefined, false, undefined, this)

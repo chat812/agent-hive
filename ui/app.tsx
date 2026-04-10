@@ -444,6 +444,22 @@ COMMUNICATION: direct, opinionated, brief. The Executor needs a decision, not a 
   },
 ];
 
+const ROLE_BADGE_COLORS: Record<string, string> = {
+  Master: "#e05c5c",
+  Worker: "#5b8ce6",
+  Executor: "#e0854a",
+  Advisor: "#7dc96b",
+};
+
+function getRoleIcon(role: string): { label: string; color: string } | null {
+  if (!role) return null;
+  const preset = PRESET_ROLES.find((r) => r.prompt === role);
+  if (preset) return { label: preset.label[0], color: ROLE_BADGE_COLORS[preset.label] ?? "#888" };
+  const firstWord = role.trim().split(/\s+/)[0];
+  if (firstWord) return { label: firstWord[0].toUpperCase(), color: "#888" };
+  return null;
+}
+
 function RolePopup({ peer, masterToken, onClose }: {
   peer: Peer; masterToken: string; onClose: () => void;
 }) {
@@ -824,13 +840,16 @@ function PixelAvatar({ seed, size = 56 }: { seed: string; size?: number }) {
 function peerActivityState(peer: Peer): "offline" | "idle" | "working" | "thinking" {
   if (peer.status === "offline") return "offline";
   const age = Date.now() - new Date(peer.last_seen).getTime();
-  if (age < 6_000) return "thinking";       // heartbeat < 6s ago → mid-cycle
-  if (peer.summary && age < 120_000) return "working"; // has summary + seen < 2min
+  if (age < 15_000) return "thinking";      // within one heartbeat cycle → active
+  if (peer.summary && age < 180_000) return "working"; // has summary + seen < 3min
   return "idle";
 }
 
 function ActivityBubble({ state, summary }: { state: "offline" | "idle" | "working" | "thinking"; summary: string }) {
-  if (state === "offline" || state === "idle") {
+  if (state === "offline") {
+    return <div className="avatar-bubble avatar-bubble-offline">offline</div>;
+  }
+  if (state === "idle") {
     return <div className="avatar-bubble avatar-bubble-idle">idle</div>;
   }
   if (state === "thinking") {
@@ -852,10 +871,18 @@ function PeerAvatarItem({ peer }: { peer: Peer }) {
   const isOffline = peer.status === "offline";
   const label = (peer.name || peer.id).replace(/-\w+$/, ""); // first word only
   const state = peerActivityState(peer);
+  const roleIcon = getRoleIcon(peer.role ?? "");
   return (
     <div className={`peer-avatar-item${isOffline ? " offline" : ""}`} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}>
       <ActivityBubble state={state} summary={peer.summary ?? ""} />
-      <PixelAvatar seed={peer.name || peer.id} size={48} />
+      <div style={{ position: "relative", width: 48, height: 48 }}>
+        <PixelAvatar seed={peer.name || peer.id} size={48} />
+        {roleIcon && (
+          <div className="role-icon-badge" style={{ background: roleIcon.color }} title={peer.role}>
+            {roleIcon.label}
+          </div>
+        )}
+      </div>
       <span className="peer-avatar-name" style={{ color: peerColor(peer.name || peer.id) }}>{label}</span>
       {hovered && (
         <div className="peer-avatar-tooltip">
@@ -1055,7 +1082,9 @@ function Dashboard({ masterToken }: { masterToken: string }) {
   const pendingPeers = peers.filter((p) => p.status === "pending");
   const onlinePeers = peers.filter((p) => p.status === "approved");
   const offlinePeers = peers.filter((p) => p.status === "offline");
-  const approvedPeers = [...onlinePeers, ...offlinePeers];
+  const channelOnline = onlinePeers.filter((p) => p.channel === selectedChannel);
+  const channelOffline = offlinePeers.filter((p) => p.channel === selectedChannel);
+  const channelPeers = [...channelOnline, ...channelOffline];
 
   return (
     <div className="app-shell">
@@ -1096,18 +1125,19 @@ function Dashboard({ masterToken }: { masterToken: string }) {
           </div>
         )}
 
-        {/* Active peers */}
+        {/* Active peers — filtered to selected channel */}
         <div className="section">
           <div className="section-header">
-            Active Peers
-            <span className="count">{onlinePeers.length}</span>
-            {offlinePeers.length > 0 && <span className="count" style={{ opacity: 0.45 }}>{offlinePeers.length} offline</span>}
+            <span>Active Peers</span>
+            <span className="channel-badge" style={{ marginLeft: 4 }}>#{selectedChannel}</span>
+            <span className="count">{channelOnline.length}</span>
+            {channelOffline.length > 0 && <span className="count" style={{ opacity: 0.45 }}>{channelOffline.length} offline</span>}
           </div>
-          {approvedPeers.length === 0 ? (
-            <div className="empty">No peers connected yet.</div>
+          {channelPeers.length === 0 ? (
+            <div className="empty">No peers in #{selectedChannel}.</div>
           ) : (
             <div className="peer-avatar-grid">
-              {approvedPeers.map((p) => <PeerAvatarItem key={p.id} peer={p} />)}
+              {channelPeers.map((p) => <PeerAvatarItem key={p.id} peer={p} />)}
             </div>
           )}
         </div>
