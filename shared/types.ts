@@ -53,19 +53,6 @@ export interface ChannelMemoryEntry {
   written_at: string; // ISO timestamp
 }
 
-export interface ToolEntry {
-  id: number;
-  channel: string;
-  tool_name: string;
-  peer_name: string;
-  peer_id: string;
-  install_cmd: string;   // e.g. "brew install jadx"
-  invoke_hint: string;   // e.g. "jadx --output-dir {output} {input}"
-  verified_at: string;
-  peer_status: string;   // "approved" | "offline" | "unknown"
-  pending_tasks: number; // undelivered message count — workload proxy
-}
-
 export interface FileEntry {
   id: string;
   path: string;        // logical path e.g. "datasets/model.pkl"
@@ -164,6 +151,4 @@ export type WsEvent =
   | { type: "file_deleted"; file_id: string; channel: string }
   | { type: "channel_aborted"; name: string }
   | { type: "channel_resumed"; name: string }
-  | { type: "tool_registered"; tool: ToolEntry }
-  | { type: "tool_unregistered"; tool_name: string; peer_name: string; channel: string }
   | { type: "snapshot"; peers: Peer[]; recent_messages: Message[]; channels: Channel[] };
