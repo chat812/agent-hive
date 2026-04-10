@@ -28,6 +28,7 @@ import type {
   Channel,
   WsEvent,
   FileEntry,
+  ToolEntry,
 } from "./shared/types.ts";
 import {
   loadOrCreateMasterKey,
@@ -195,6 +196,20 @@ db.run(`
   )
 `);
 
+db.run(`
+  CREATE TABLE IF NOT EXISTS tool_registry (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    peer_name TEXT NOT NULL,
+    peer_id TEXT NOT NULL,
+    install_cmd TEXT NOT NULL DEFAULT '',
+    invoke_hint TEXT NOT NULL DEFAULT '',
+    verified_at TEXT NOT NULL,
+    UNIQUE(channel, tool_name, peer_name)
+  )
+`);
+
 // Migrate: add columns if missing (for existing DBs)
 try { db.run("ALTER TABLE peers ADD COLUMN harness TEXT NOT NULL DEFAULT 'claude-code'"); } catch {}
 try { db.run("ALTER TABLE peers ADD COLUMN hostname TEXT NOT NULL DEFAULT 'localhost'"); } catch {}
@@ -298,6 +313,33 @@ const selectLatestByPath = db.prepare("SELECT * FROM files WHERE channel = ? AND
 const deleteFile = db.prepare("DELETE FROM files WHERE id = ?");
 
 const updateLastSeen = db.prepare("UPDATE peers SET last_seen = ? WHERE id = ?");
+
+const insertOrReplaceTool = db.prepare(`
+  INSERT INTO tool_registry (channel, tool_name, peer_name, peer_id, install_cmd, invoke_hint, verified_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(channel, tool_name, peer_name) DO UPDATE SET
+    install_cmd = excluded.install_cmd,
+    invoke_hint = excluded.invoke_hint,
+    verified_at = excluded.verified_at
+`);
+const selectToolsByChannel = db.prepare(`
+  SELECT tr.*, COALESCE(p.status, 'unknown') as peer_status,
+    COALESCE((SELECT COUNT(*) FROM messages WHERE to_id = p.id AND delivered = 0), 0) as pending_tasks
+  FROM tool_registry tr
+  LEFT JOIN peers p ON p.name = tr.peer_name AND p.channel = tr.channel
+  WHERE tr.channel = ?
+  ORDER BY tr.tool_name ASC, pending_tasks ASC
+`);
+const selectToolsByChannelAndName = db.prepare(`
+  SELECT tr.*, COALESCE(p.status, 'unknown') as peer_status,
+    COALESCE((SELECT COUNT(*) FROM messages WHERE to_id = p.id AND delivered = 0), 0) as pending_tasks
+  FROM tool_registry tr
+  LEFT JOIN peers p ON p.name = tr.peer_name AND p.channel = tr.channel
+  WHERE tr.channel = ? AND tr.tool_name = ?
+  ORDER BY pending_tasks ASC
+`);
+const deleteToolsByPeer = db.prepare("DELETE FROM tool_registry WHERE channel = ? AND peer_name = ?");
+const deleteToolByName = db.prepare("DELETE FROM tool_registry WHERE channel = ? AND peer_name = ? AND tool_name = ?");
 const updateTokens = db.prepare("UPDATE peers SET tokens_in = ?, tokens_out = ? WHERE id = ?");
 const updateSummary = db.prepare("UPDATE peers SET summary = ? WHERE id = ?");
 const updateStatus = db.prepare("UPDATE peers SET status = ? WHERE id = ?");
@@ -1029,6 +1071,32 @@ case "/set-role": {
             insertMessage.run("system", peer.id, resetMsg, resetNow, ch);
             broadcast({ type: "message_sent", message: { id: 0, from_id: "system", to_id: peer.id, text: resetMsg, sent_at: resetNow, channel: ch, delivered: false } });
           }
+          return Response.json({ ok: true });
+        }
+        case "/tool-register": {
+          const { peer_id, tool_name, install_cmd, invoke_hint } = body as { peer_id: string; tool_name: string; install_cmd: string; invoke_hint: string };
+          const peer = selectPeerById.get(peer_id) as Peer | null;
+          if (!peer) return Response.json({ error: "Peer not found" }, { status: 404 });
+          const now = new Date().toISOString();
+          insertOrReplaceTool.run(peer.channel, tool_name, peer.name, peer.id, install_cmd ?? "", invoke_hint ?? "", now);
+          const tool = (selectToolsByChannelAndName.all(peer.channel, tool_name) as ToolEntry[]).find(t => t.peer_name === peer.name);
+          if (tool) broadcast({ type: "tool_registered", tool });
+          return Response.json({ ok: true });
+        }
+        case "/tool-list": {
+          const { channel, tool_name } = body as { channel: string; tool_name?: string };
+          const ch = channel ?? "main";
+          const tools = tool_name
+            ? selectToolsByChannelAndName.all(ch, tool_name)
+            : selectToolsByChannel.all(ch);
+          return Response.json({ tools });
+        }
+        case "/tool-unregister": {
+          const { peer_id, tool_name } = body as { peer_id: string; tool_name: string };
+          const peer = selectPeerById.get(peer_id) as Peer | null;
+          if (!peer) return Response.json({ error: "Peer not found" }, { status: 404 });
+          deleteToolByName.run(peer.channel, peer.name, tool_name);
+          broadcast({ type: "tool_unregistered", tool_name, peer_name: peer.name, channel: peer.channel });
           return Response.json({ ok: true });
         }
         default:
