@@ -178,7 +178,7 @@ function PeerCard({
 
 // --- Channel Panel ---
 
-function ChannelPanel({ channels, masterToken, selectedChannel, onSelectChannel, channelMemory, onLoadMemory }: { channels: Channel[]; masterToken: string; selectedChannel: string; onSelectChannel: (name: string) => void; channelMemory: Record<string, ChannelMemoryEntry[]>; onLoadMemory: (ch: string) => void }) {
+function ChannelPanel({ channels, masterToken, selectedChannel, onSelectChannel }: { channels: Channel[]; masterToken: string; selectedChannel: string; onSelectChannel: (name: string) => void }) {
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const [error, setError] = useState("");
@@ -251,8 +251,6 @@ function ChannelPanel({ channels, masterToken, selectedChannel, onSelectChannel,
             onToggle={() => { toggleExpand(ch.name); onSelectChannel(ch.name); }}
             onRemove={() => removeChannel(ch.name)}
             masterToken={masterToken}
-            memory={channelMemory[ch.name] ?? null}
-            onLoadMemory={() => onLoadMemory(ch.name)}
           />
         ))}
       </div>
@@ -597,39 +595,12 @@ function MemoryValuePopup({ entry, masterToken, channel, onClose, onDelete }: {
   );
 }
 
-function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterToken, memory, onLoadMemory }: {
+function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterToken }: {
   ch: Channel; isExpanded: boolean; isSelected: boolean;
   onToggle: () => void; onRemove: () => void; masterToken: string;
-  memory: ChannelMemoryEntry[] | null; onLoadMemory: () => void;
 }) {
   const [activePeer, setActivePeer] = useState<Peer | null>(null);
-  const [activeMemKey, setActiveMemKey] = useState<ChannelMemoryEntry | null>(null);
   const onlineCount = ch.peers.filter((p) => p.status !== "offline").length;
-  const loaded = useRef(false);
-
-  useEffect(() => {
-    if (isExpanded && !loaded.current) {
-      loaded.current = true;
-      onLoadMemory();
-    }
-  }, [isExpanded]);
-
-  const handleDeleteMemory = async (key: string) => {
-    await fetch("/memory-delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
-      body: JSON.stringify({ channel: ch.name, key, peer_id: "admin" }),
-    });
-    setActiveMemKey(null);
-  };
-
-  const handleClearMemory = async () => {
-    await fetch("/memory-clear", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
-      body: JSON.stringify({ channel: ch.name }),
-    });
-  };
 
 
   return (
@@ -665,21 +636,6 @@ function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterTo
               ))
             )}
 
-            {memory && memory.length > 0 && (
-              <div className="memory-section">
-                <div className="memory-section-header">
-                  Memory <span className="memory-count">{memory.length}</span>
-                  <button className="btn-icon" style={{ color: "var(--red)", marginLeft: "auto" }} onClick={handleClearMemory} title="Clear all memory in this channel">✕</button>
-                </div>
-                {memory.map((m) => (
-                  <div key={m.key} className="memory-row clickable" onClick={() => setActiveMemKey(m)}>
-                    <span className="memory-key">{m.key}</span>
-                    <span className="memory-size">{m.size >= 1024 ? `${(m.size / 1024).toFixed(1)}KB` : `${m.size}B`}</span>
-                    <span className="memory-age">{timeAgo(m.written_at)}</span>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
         )}
       </div>
@@ -689,15 +645,6 @@ function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterTo
           peer={activePeer}
           masterToken={masterToken}
           onClose={() => setActivePeer(null)}
-        />
-      )}
-      {activeMemKey && (
-        <MemoryValuePopup
-          entry={activeMemKey}
-          masterToken={masterToken}
-          channel={ch.name}
-          onClose={() => setActiveMemKey(null)}
-          onDelete={() => handleDeleteMemory(activeMemKey.key)}
         />
       )}
     </>
@@ -772,6 +719,60 @@ function FileList({ files, masterToken, channel, peers }: {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function MemoryPanel({ memory, masterToken, channel }: {
+  memory: ChannelMemoryEntry[]; masterToken: string; channel: string;
+}) {
+  const [activeEntry, setActiveEntry] = useState<ChannelMemoryEntry | null>(null);
+
+  const handleDelete = async (key: string) => {
+    await fetch("/memory-delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
+      body: JSON.stringify({ channel, key, peer_id: "admin" }),
+    });
+    setActiveEntry(null);
+  };
+
+  const handleClear = async () => {
+    await fetch("/memory-clear", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
+      body: JSON.stringify({ channel }),
+    });
+  };
+
+  return (
+    <div className="memory-panel">
+      <div className="memory-panel-toolbar">
+        <span className="memory-panel-label">{memory.length} {memory.length === 1 ? "entry" : "entries"}</span>
+        {memory.length > 0 && (
+          <button className="btn-icon" style={{ color: "var(--red)", marginLeft: "auto" }} onClick={handleClear} title="Clear all memory">✕ clear</button>
+        )}
+      </div>
+      {memory.length === 0 ? (
+        <div className="empty">No memory in #{channel}.</div>
+      ) : (
+        memory.map((m) => (
+          <div key={m.key} className="memory-row clickable" onClick={() => setActiveEntry(m)}>
+            <span className="memory-key">{m.key}</span>
+            <span className="memory-size">{m.size >= 1024 ? `${(m.size / 1024).toFixed(1)}KB` : `${m.size}B`}</span>
+            <span className="memory-age">{timeAgo(m.written_at)}</span>
+          </div>
+        ))
+      )}
+      {activeEntry && (
+        <MemoryValuePopup
+          entry={activeEntry}
+          masterToken={masterToken}
+          channel={channel}
+          onClose={() => setActiveEntry(null)}
+          onDelete={() => handleDelete(activeEntry.key)}
+        />
+      )}
     </div>
   );
 }
@@ -976,7 +977,7 @@ function Dashboard({ masterToken }: { masterToken: string }) {
   const [selectedChannel, setSelectedChannel] = useState<string>("main");
   const [channelMemory, setChannelMemory] = useState<Record<string, ChannelMemoryEntry[]>>({});
   const [channelFiles, setChannelFiles] = useState<Record<string, FileEntry[]>>({});
-  const [rightTab, setRightTab] = useState<"messages" | "files">("messages");
+  const [rightTab, setRightTab] = useState<"messages" | "memory" | "files">("messages");
   const wsRef = useRef<WebSocket | null>(null);
   const [, setTick] = useState(0); // force re-render for timeAgo
 
@@ -1154,7 +1155,7 @@ function Dashboard({ masterToken }: { masterToken: string }) {
     } catch {}
   }, [masterToken]);
 
-  useEffect(() => { loadFiles(selectedChannel); }, [selectedChannel, loadFiles]);
+  useEffect(() => { loadFiles(selectedChannel); loadMemory(selectedChannel); }, [selectedChannel, loadFiles, loadMemory]);
 
   const pendingPeers = peers.filter((p) => p.status === "pending");
   const onlinePeers = peers.filter((p) => p.status === "approved");
@@ -1171,7 +1172,7 @@ function Dashboard({ masterToken }: { masterToken: string }) {
           <span className={`status-dot ${connected ? "connected" : "disconnected"}`} />
           Agent Hive
         </div>
-        <ChannelPanel channels={channels} masterToken={masterToken} selectedChannel={selectedChannel} onSelectChannel={setSelectedChannel} channelMemory={channelMemory} onLoadMemory={loadMemory} />
+        <ChannelPanel channels={channels} masterToken={masterToken} selectedChannel={selectedChannel} onSelectChannel={setSelectedChannel} />
       </aside>
 
       {/* Main */}
@@ -1226,6 +1227,10 @@ function Dashboard({ masterToken }: { masterToken: string }) {
               Messages
               <span className="count">{messages.filter(m => !m.channel || m.channel === selectedChannel).length}</span>
             </button>
+            <button className={`tab-btn${rightTab === "memory" ? " active" : ""}`} onClick={() => setRightTab("memory")}>
+              Memory
+              <span className="count">{(channelMemory[selectedChannel] ?? []).length}</span>
+            </button>
             <button className={`tab-btn${rightTab === "files" ? " active" : ""}`} onClick={() => setRightTab("files")}>
               Files
               <span className="count">{(channelFiles[selectedChannel] ?? []).length}</span>
@@ -1234,9 +1239,13 @@ function Dashboard({ masterToken }: { masterToken: string }) {
               <button className="btn-icon" style={{ marginLeft: "auto" }} onClick={clearMessages} title="Clear all messages">✕</button>
             )}
           </div>
-          {rightTab === "messages" ? (
+          {rightTab === "messages" && (
             <MessageBox messages={messages.filter(m => !m.channel || m.channel === selectedChannel)} peers={peers} newMessageKeys={newMessageKeys} />
-          ) : (
+          )}
+          {rightTab === "memory" && (
+            <MemoryPanel memory={channelMemory[selectedChannel] ?? []} masterToken={masterToken} channel={selectedChannel} />
+          )}
+          {rightTab === "files" && (
             <FileList files={channelFiles[selectedChannel] ?? []} masterToken={masterToken} channel={selectedChannel} peers={peers} />
           )}
         </div>

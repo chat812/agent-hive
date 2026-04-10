@@ -17347,7 +17347,7 @@ function PeerCard({
     ]
   }, undefined, true, undefined, this);
 }
-function ChannelPanel({ channels, masterToken, selectedChannel, onSelectChannel, channelMemory, onLoadMemory }) {
+function ChannelPanel({ channels, masterToken, selectedChannel, onSelectChannel }) {
   const [creating, setCreating] = import_react.useState(false);
   const [newName, setNewName] = import_react.useState("");
   const [error, setError] = import_react.useState("");
@@ -17449,9 +17449,7 @@ function ChannelPanel({ channels, masterToken, selectedChannel, onSelectChannel,
             onSelectChannel(ch.name);
           },
           onRemove: () => removeChannel(ch.name),
-          masterToken,
-          memory: channelMemory[ch.name] ?? null,
-          onLoadMemory: () => onLoadMemory(ch.name)
+          masterToken
         }, ch.name, false, undefined, this))
       }, undefined, false, undefined, this)
     ]
@@ -17853,32 +17851,9 @@ function MemoryValuePopup({ entry, masterToken, channel, onClose, onDelete }) {
     }, undefined, true, undefined, this)
   }, undefined, false, undefined, this);
 }
-function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterToken, memory, onLoadMemory }) {
+function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterToken }) {
   const [activePeer, setActivePeer] = import_react.useState(null);
-  const [activeMemKey, setActiveMemKey] = import_react.useState(null);
   const onlineCount = ch.peers.filter((p) => p.status !== "offline").length;
-  const loaded = import_react.useRef(false);
-  import_react.useEffect(() => {
-    if (isExpanded && !loaded.current) {
-      loaded.current = true;
-      onLoadMemory();
-    }
-  }, [isExpanded]);
-  const handleDeleteMemory = async (key) => {
-    await fetch("/memory-delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
-      body: JSON.stringify({ channel: ch.name, key, peer_id: "admin" })
-    });
-    setActiveMemKey(null);
-  };
-  const handleClearMemory = async () => {
-    await fetch("/memory-clear", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
-      body: JSON.stringify({ channel: ch.name })
-    });
-  };
   return /* @__PURE__ */ jsx_dev_runtime.jsxDEV(jsx_dev_runtime.Fragment, {
     children: [
       /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
@@ -17920,88 +17895,39 @@ function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterTo
           }, undefined, true, undefined, this),
           isExpanded && /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
             className: "channel-members",
-            children: [
-              ch.peers.length === 0 ? /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
-                className: "channel-empty",
-                children: "No members"
-              }, undefined, false, undefined, this) : ch.peers.map((p) => /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
-                className: `channel-member-row clickable${p.status === "offline" ? " offline" : ""}`,
-                onClick: () => setActivePeer(p),
-                children: [
-                  /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
-                    className: `peer-status-dot ${p.status === "offline" ? "offline" : "online"}`
-                  }, undefined, false, undefined, this),
-                  /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
-                    className: `harness-badge ${getHarnessClass(p.harness)}`,
-                    children: harnessLabel(p.harness)
-                  }, undefined, false, undefined, this),
-                  /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
-                    className: "channel-member-name",
-                    style: { color: peerColor(p.name || p.id) },
-                    children: [
-                      p.name || p.id,
-                      /* @__PURE__ */ jsx_dev_runtime.jsxDEV(RoleEmoji, {
-                        role: p.role
-                      }, undefined, false, undefined, this)
-                    ]
-                  }, undefined, true, undefined, this)
-                ]
-              }, p.id, true, undefined, this)),
-              memory && memory.length > 0 && /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
-                className: "memory-section",
-                children: [
-                  /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
-                    className: "memory-section-header",
-                    children: [
-                      "Memory ",
-                      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
-                        className: "memory-count",
-                        children: memory.length
-                      }, undefined, false, undefined, this),
-                      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
-                        className: "btn-icon",
-                        style: { color: "var(--red)", marginLeft: "auto" },
-                        onClick: handleClearMemory,
-                        title: "Clear all memory in this channel",
-                        children: "✕"
-                      }, undefined, false, undefined, this)
-                    ]
-                  }, undefined, true, undefined, this),
-                  memory.map((m) => /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
-                    className: "memory-row clickable",
-                    onClick: () => setActiveMemKey(m),
-                    children: [
-                      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
-                        className: "memory-key",
-                        children: m.key
-                      }, undefined, false, undefined, this),
-                      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
-                        className: "memory-size",
-                        children: m.size >= 1024 ? `${(m.size / 1024).toFixed(1)}KB` : `${m.size}B`
-                      }, undefined, false, undefined, this),
-                      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
-                        className: "memory-age",
-                        children: timeAgo(m.written_at)
-                      }, undefined, false, undefined, this)
-                    ]
-                  }, m.key, true, undefined, this))
-                ]
-              }, undefined, true, undefined, this)
-            ]
-          }, undefined, true, undefined, this)
+            children: ch.peers.length === 0 ? /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+              className: "channel-empty",
+              children: "No members"
+            }, undefined, false, undefined, this) : ch.peers.map((p) => /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+              className: `channel-member-row clickable${p.status === "offline" ? " offline" : ""}`,
+              onClick: () => setActivePeer(p),
+              children: [
+                /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                  className: `peer-status-dot ${p.status === "offline" ? "offline" : "online"}`
+                }, undefined, false, undefined, this),
+                /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                  className: `harness-badge ${getHarnessClass(p.harness)}`,
+                  children: harnessLabel(p.harness)
+                }, undefined, false, undefined, this),
+                /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                  className: "channel-member-name",
+                  style: { color: peerColor(p.name || p.id) },
+                  children: [
+                    p.name || p.id,
+                    /* @__PURE__ */ jsx_dev_runtime.jsxDEV(RoleEmoji, {
+                      role: p.role
+                    }, undefined, false, undefined, this)
+                  ]
+                }, undefined, true, undefined, this)
+              ]
+            }, p.id, true, undefined, this))
+          }, undefined, false, undefined, this)
         ]
       }, undefined, true, undefined, this),
       activePeer && /* @__PURE__ */ jsx_dev_runtime.jsxDEV(RolePopup, {
         peer: activePeer,
         masterToken,
         onClose: () => setActivePeer(null)
-      }, undefined, false, undefined, this),
-      activeMemKey && /* @__PURE__ */ jsx_dev_runtime.jsxDEV(MemoryValuePopup, {
-        entry: activeMemKey,
-        masterToken,
-        channel: ch.name,
-        onClose: () => setActiveMemKey(null),
-        onDelete: () => handleDeleteMemory(activeMemKey.key)
       }, undefined, false, undefined, this)
     ]
   }, undefined, true, undefined, this);
@@ -18128,6 +18054,81 @@ function FileList({ files, masterToken, channel, peers }) {
       }, f.id, true, undefined, this);
     })
   }, undefined, false, undefined, this);
+}
+function MemoryPanel({ memory, masterToken, channel }) {
+  const [activeEntry, setActiveEntry] = import_react.useState(null);
+  const handleDelete = async (key) => {
+    await fetch("/memory-delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
+      body: JSON.stringify({ channel, key, peer_id: "admin" })
+    });
+    setActiveEntry(null);
+  };
+  const handleClear = async () => {
+    await fetch("/memory-clear", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
+      body: JSON.stringify({ channel })
+    });
+  };
+  return /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+    className: "memory-panel",
+    children: [
+      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+        className: "memory-panel-toolbar",
+        children: [
+          /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+            className: "memory-panel-label",
+            children: [
+              memory.length,
+              " ",
+              memory.length === 1 ? "entry" : "entries"
+            ]
+          }, undefined, true, undefined, this),
+          memory.length > 0 && /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
+            className: "btn-icon",
+            style: { color: "var(--red)", marginLeft: "auto" },
+            onClick: handleClear,
+            title: "Clear all memory",
+            children: "✕ clear"
+          }, undefined, false, undefined, this)
+        ]
+      }, undefined, true, undefined, this),
+      memory.length === 0 ? /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+        className: "empty",
+        children: [
+          "No memory in #",
+          channel,
+          "."
+        ]
+      }, undefined, true, undefined, this) : memory.map((m) => /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+        className: "memory-row clickable",
+        onClick: () => setActiveEntry(m),
+        children: [
+          /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+            className: "memory-key",
+            children: m.key
+          }, undefined, false, undefined, this),
+          /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+            className: "memory-size",
+            children: m.size >= 1024 ? `${(m.size / 1024).toFixed(1)}KB` : `${m.size}B`
+          }, undefined, false, undefined, this),
+          /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+            className: "memory-age",
+            children: timeAgo(m.written_at)
+          }, undefined, false, undefined, this)
+        ]
+      }, m.key, true, undefined, this)),
+      activeEntry && /* @__PURE__ */ jsx_dev_runtime.jsxDEV(MemoryValuePopup, {
+        entry: activeEntry,
+        masterToken,
+        channel,
+        onClose: () => setActiveEntry(null),
+        onDelete: () => handleDelete(activeEntry.key)
+      }, undefined, false, undefined, this)
+    ]
+  }, undefined, true, undefined, this);
 }
 function MessageItem({ msg, peers, isNew }) {
   const fromPeer = peers.find((p) => p.id === msg.from_id);
@@ -18558,7 +18559,8 @@ function Dashboard({ masterToken }) {
   }, [masterToken]);
   import_react.useEffect(() => {
     loadFiles(selectedChannel);
-  }, [selectedChannel, loadFiles]);
+    loadMemory(selectedChannel);
+  }, [selectedChannel, loadFiles, loadMemory]);
   const pendingPeers = peers.filter((p) => p.status === "pending");
   const onlinePeers = peers.filter((p) => p.status === "approved");
   const offlinePeers = peers.filter((p) => p.status === "offline");
@@ -18584,9 +18586,7 @@ function Dashboard({ masterToken }) {
             channels,
             masterToken,
             selectedChannel,
-            onSelectChannel: setSelectedChannel,
-            channelMemory,
-            onLoadMemory: loadMemory
+            onSelectChannel: setSelectedChannel
           }, undefined, false, undefined, this)
         ]
       }, undefined, true, undefined, this),
@@ -18700,6 +18700,17 @@ function Dashboard({ masterToken }) {
                     ]
                   }, undefined, true, undefined, this),
                   /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
+                    className: `tab-btn${rightTab === "memory" ? " active" : ""}`,
+                    onClick: () => setRightTab("memory"),
+                    children: [
+                      "Memory",
+                      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                        className: "count",
+                        children: (channelMemory[selectedChannel] ?? []).length
+                      }, undefined, false, undefined, this)
+                    ]
+                  }, undefined, true, undefined, this),
+                  /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
                     className: `tab-btn${rightTab === "files" ? " active" : ""}`,
                     onClick: () => setRightTab("files"),
                     children: [
@@ -18719,11 +18730,17 @@ function Dashboard({ masterToken }) {
                   }, undefined, false, undefined, this)
                 ]
               }, undefined, true, undefined, this),
-              rightTab === "messages" ? /* @__PURE__ */ jsx_dev_runtime.jsxDEV(MessageBox, {
+              rightTab === "messages" && /* @__PURE__ */ jsx_dev_runtime.jsxDEV(MessageBox, {
                 messages: messages.filter((m) => !m.channel || m.channel === selectedChannel),
                 peers,
                 newMessageKeys
-              }, undefined, false, undefined, this) : /* @__PURE__ */ jsx_dev_runtime.jsxDEV(FileList, {
+              }, undefined, false, undefined, this),
+              rightTab === "memory" && /* @__PURE__ */ jsx_dev_runtime.jsxDEV(MemoryPanel, {
+                memory: channelMemory[selectedChannel] ?? [],
+                masterToken,
+                channel: selectedChannel
+              }, undefined, false, undefined, this),
+              rightTab === "files" && /* @__PURE__ */ jsx_dev_runtime.jsxDEV(FileList, {
                 files: channelFiles[selectedChannel] ?? [],
                 masterToken,
                 channel: selectedChannel,
