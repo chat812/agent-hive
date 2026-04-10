@@ -64,6 +64,21 @@ db.run(`
 db.run(`INSERT OR IGNORE INTO channels (name, created_at) VALUES ('main', '${new Date().toISOString()}')`);
 
 db.run(`
+  CREATE TABLE IF NOT EXISTS peer_last_channel (
+    hostname TEXT NOT NULL,
+    cwd TEXT NOT NULL DEFAULT '',
+    channel TEXT NOT NULL DEFAULT 'main',
+    PRIMARY KEY (hostname, cwd)
+  )
+`);
+// Migrate: drop old (name, hostname, cwd) schema if name column exists
+try {
+  db.query("SELECT name FROM peer_last_channel LIMIT 1").all();
+  db.run("DROP TABLE peer_last_channel");
+  db.run("CREATE TABLE peer_last_channel (hostname TEXT NOT NULL, cwd TEXT NOT NULL DEFAULT '', channel TEXT NOT NULL DEFAULT 'main', PRIMARY KEY (hostname, cwd))");
+} catch {};
+
+db.run(`
   CREATE TABLE IF NOT EXISTS peers (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL DEFAULT '',
@@ -227,6 +242,8 @@ const insertChannel = db.prepare("INSERT OR IGNORE INTO channels (name, created_
 const deleteChannel = db.prepare("DELETE FROM channels WHERE name != 'main' AND name = ?");
 const updatePeerChannel = db.prepare("UPDATE peers SET channel = ? WHERE id = ?");
 const updatePeerRole = db.prepare("UPDATE peers SET role = ? WHERE id = ?");
+const upsertLastChannel = db.prepare("INSERT OR REPLACE INTO peer_last_channel (hostname, cwd, channel) VALUES (?, ?, ?)");
+const selectLastChannel = db.prepare("SELECT channel FROM peer_last_channel WHERE hostname = ? AND cwd = ?");
 const resetPeersInChannel = db.prepare("UPDATE peers SET channel = 'main', role = '' WHERE channel = ?");
 const selectPeersByChannel = db.prepare("SELECT * FROM peers WHERE channel = ? AND status IN ('approved', 'offline')");
 const selectRolesByChannel = db.prepare("SELECT name, description FROM channel_roles WHERE channel = ? ORDER BY name ASC");
@@ -302,18 +319,18 @@ function handleRegister(body: RegisterRequest): RegisterResponse {
   const now = new Date().toISOString();
   const sessionToken = generateToken(32);
 
-  // Remove any existing registration for this PID + hostname (re-registration)
+  // Look up last channel before removing old records
+  const lastChannelRow = selectLastChannel.get(body.hostname, body.cwd) as { channel: string } | null;
+  const lastChannel = lastChannelRow?.channel ?? "main";
+  // Verify channel still exists (may have been deleted while peer was away)
+  const channelExists = lastChannel === "main" || !!selectChannelByName.get(lastChannel);
+  const rejoinChannel = channelExists ? lastChannel : "main";
+
+  // Remove any existing registration for this exact PID + hostname (process restarted)
   const existingByPid = db
     .query("SELECT id FROM peers WHERE pid = ? AND hostname = ?")
     .get(body.pid, body.hostname) as { id: string } | null;
   if (existingByPid) removePeer(existingByPid.id);
-
-  // Replace any existing session with the same name + hostname — handles reconnect
-  // where the old session is still alive (approved) or marked offline
-  const existingByName = db
-    .query("SELECT id FROM peers WHERE name = ? AND hostname = ?")
-    .get(body.name, body.hostname) as { id: string } | null;
-  if (existingByName && existingByName.id !== existingByPid?.id) removePeer(existingByName.id);
 
   const known = isKnownPeer.get(body.hostname) as { 1: number } | null;
 
@@ -324,17 +341,20 @@ function handleRegister(body: RegisterRequest): RegisterResponse {
   insertToken.run(sessionToken, id, now);
 
   if (known) {
-    // Previously approved — auto-approve without requiring dashboard interaction
+    // Previously approved — auto-approve and restore last channel
     updateStatus.run("approved", id);
-    pushChannelRole(id, "main");
+    if (rejoinChannel !== "main") {
+      updatePeerChannel.run(rejoinChannel, id);
+    }
+    const { role } = pushChannelRole(id, rejoinChannel);
     const peer = selectPeerById.get(id) as Peer;
     broadcast({ type: "peer_joined", peer });
+    return { id, token: sessionToken, channel: rejoinChannel, role };
   } else {
     const peer = selectPeerById.get(id) as Peer;
     broadcast({ type: "peer_pending", peer });
+    return { id, token: sessionToken, channel: rejoinChannel, role: "" };
   }
-
-  return { id, token: sessionToken };
 }
 
 function pushChannelRole(peer_id: string, channel: string): { role: string; memory_keys: string[] } {
@@ -352,7 +372,15 @@ function handleApprove(body: ApproveRejectRequest): { ok: boolean; role: string;
   if (!peer) return { ok: false, role: "", memory_keys: [], error: "Peer not found" };
   updateStatus.run("approved", body.peer_id);
   insertKnownPeer.run(peer.hostname); // remember machine for future auto-approval
-  const { role, memory_keys } = pushChannelRole(body.peer_id, peer.channel);
+
+  // Restore last channel — broker decides, client never needs to ask
+  const lastChannelRow = selectLastChannel.get(peer.hostname, peer.cwd) as { channel: string } | null;
+  const lastChannel = lastChannelRow?.channel ?? "main";
+  const channelExists = lastChannel === "main" || !!selectChannelByName.get(lastChannel);
+  const rejoinChannel = channelExists ? lastChannel : "main";
+  if (rejoinChannel !== "main") updatePeerChannel.run(rejoinChannel, body.peer_id);
+
+  const { role, memory_keys } = pushChannelRole(body.peer_id, rejoinChannel);
   const updated = selectPeerById.get(body.peer_id) as Peer;
   broadcast({ type: "peer_joined", peer: updated });
   return { ok: true, role, memory_keys };
@@ -371,7 +399,7 @@ function handleAuthStatus(token: string): AuthStatusResponse | { error: string }
   if (!row) return { error: "Invalid token" };
   const peer = selectPeerById.get(row.peer_id) as Peer | null;
   if (!peer) return { error: "Peer not found" };
-  return { status: peer.status, peer_id: peer.id };
+  return { status: peer.status, peer_id: peer.id, channel: peer.channel, role: peer.role };
 }
 
 function handleHeartbeat(body: HeartbeatRequest): { role: string } {
@@ -508,6 +536,7 @@ function handleLeaveChannel(body: { id: string }): { ok: boolean; error?: string
   if (!peer) return { ok: false, error: "Peer not found" };
   updatePeerChannel.run("main", body.id);
   pushChannelRole(body.id, "main");
+  upsertLastChannel.run(peer.hostname, peer.cwd, "main");
   const updated = selectPeerById.get(body.id) as Peer;
   broadcast({ type: "peer_updated", peer: updated });
   return { ok: true };
@@ -537,6 +566,7 @@ function handleJoinChannel(body: { id: string; channel: string }): { ok: boolean
   updatePeerChannel.run(name, body.id);
   const { role, memory_keys } = pushChannelRole(body.id, name);
   const updated = selectPeerById.get(body.id) as Peer;
+  upsertLastChannel.run(updated.hostname, updated.cwd, name);
   broadcast({ type: "peer_updated", peer: updated });
   return { ok: true, channel: name, role, memory_keys };
 }

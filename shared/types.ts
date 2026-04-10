@@ -66,6 +66,8 @@ export interface RegisterRequest {
 export interface RegisterResponse {
   id: PeerId;
   token: string; // session token (pending until approved)
+  channel: string; // current channel (broker-assigned; already restored for known peers)
+  role: string; // role in that channel
 }
 
 export interface AuthStatusRequest {
@@ -75,6 +77,8 @@ export interface AuthStatusRequest {
 export interface AuthStatusResponse {
   status: PeerStatus;
   peer_id: PeerId;
+  channel: string; // current channel after broker-side channel restoration
+  role: string;
 }
 
 export interface ApproveRejectRequest {
