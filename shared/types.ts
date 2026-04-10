@@ -26,8 +26,7 @@ export interface ChannelRole {
 }
 
 export interface Channel {
-  name: string;         // alias — machine-friendly ID, e.g. "channel-1337"
-  display_name: string; // human-readable label, e.g. "Channel 1337"
+  name: string;
   created_at: string;
   peers: Peer[];
   roles: ChannelRole[];
@@ -125,7 +124,7 @@ export type WsEvent =
   | { type: "peer_updated"; peer: Peer }
   | { type: "peer_pending"; peer: Peer }
   | { type: "message_sent"; message: Message }
-  | { type: "channel_created"; name: string; display_name: string }
+  | { type: "channel_created"; name: string }
   | { type: "channel_removed"; name: string }
   | { type: "channel_updated"; channel: Channel }
   | { type: "memory_updated"; channel: string; key: string; written_by: string; written_at: string; size: number; deleted?: boolean }

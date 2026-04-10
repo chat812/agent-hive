@@ -631,7 +631,7 @@ header h1 {
 }
 
 .channel-row.selected .channel-row-name {
-  color: var(--accent-hover);
+  color: var(--accent);
 }
 
 .channel-expand-arrow {
@@ -649,65 +649,11 @@ header h1 {
   font-size: 15px;
 }
 
-.channel-row-label {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-width: 0;
-}
-
 .channel-row-name {
   font-weight: 600;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text-bright);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.channel-row-alias {
-  font-size: 10px;
-  color: var(--text-dim);
-  font-family: monospace;
-  opacity: 0.7;
-}
-
-.channel-row.selected .channel-row-alias {
-  color: var(--accent);
-  opacity: 0.8;
-}
-
-/* Alias preview in create/rename forms */
-.channel-alias-preview {
-  font-size: 11px;
-  color: var(--accent);
-  font-family: monospace;
-  white-space: nowrap;
-  opacity: 0.8;
-}
-
-/* Rename inline row */
-.channel-rename-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px 6px 28px;
-}
-
-.channel-rename-input {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  color: var(--text);
-  font-size: 12px;
-  padding: 3px 7px;
   flex: 1;
-  min-width: 0;
-}
-
-.channel-rename-input:focus {
-  outline: none;
-  border-color: var(--accent);
 }
 
 .channel-row-count {
