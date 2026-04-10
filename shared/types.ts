@@ -18,6 +18,8 @@ export interface Peer {
   role: string; // assigned role in current channel, empty if none
   registered_at: string; // ISO timestamp
   last_seen: string; // ISO timestamp
+  tokens_in: number; // estimated input tokens consumed (tool results returned to agent)
+  tokens_out: number; // estimated output tokens produced (tool params sent by agent)
 }
 
 export interface ChannelRole {
@@ -102,6 +104,8 @@ export interface ApproveRejectRequest {
 
 export interface HeartbeatRequest {
   id: PeerId;
+  tokens_in?: number;
+  tokens_out?: number;
 }
 
 export interface SetSummaryRequest {

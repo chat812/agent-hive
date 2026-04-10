@@ -523,6 +523,23 @@ header {
   color: var(--text-dim);
 }
 
+.peer-tokens {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255,255,255,0.05);
+  font-size: 11px;
+  color: var(--text-dim);
+  font-family: monospace;
+}
+.peer-tokens span { cursor: default; }
+.peer-tokens-total {
+  margin-left: auto;
+  color: var(--accent);
+  opacity: 0.7;
+}
+
 /* Buttons */
 .btn {
   padding: 6px 14px;

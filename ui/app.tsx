@@ -23,6 +23,12 @@ function harnessLabel(harness: string): string {
   return map[harness] ?? harness.slice(0, 3).toUpperCase();
 }
 
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
 function timeAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
   if (diff < 5_000) return "just now";
@@ -162,6 +168,13 @@ function PeerCard({
           <span>seen {timeAgo(peer.last_seen)}</span>
         )}
       </div>
+      {((peer.tokens_in ?? 0) > 0 || (peer.tokens_out ?? 0) > 0) && (
+        <div className="peer-tokens">
+          <span title="Estimated input tokens (tool results received)">↓ {fmtTokens(peer.tokens_in ?? 0)}</span>
+          <span title="Estimated output tokens (tool params sent)">↑ {fmtTokens(peer.tokens_out ?? 0)}</span>
+          <span className="peer-tokens-total" title="Total estimated tokens">= {fmtTokens((peer.tokens_in ?? 0) + (peer.tokens_out ?? 0))}</span>
+        </div>
+      )}
 
       {isPending && (
         <div className="approval-actions">

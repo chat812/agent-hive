@@ -206,6 +206,8 @@ try { db.run("ALTER TABLE peers ADD COLUMN role TEXT NOT NULL DEFAULT ''"); } ca
 try { db.run("ALTER TABLE files ADD COLUMN path TEXT NOT NULL DEFAULT ''"); } catch {}
 try { db.run("ALTER TABLE files ADD COLUMN version INTEGER NOT NULL DEFAULT 1"); } catch {}
 try { db.run("ALTER TABLE files ADD COLUMN sha256 TEXT NOT NULL DEFAULT ''"); } catch {}
+try { db.run("ALTER TABLE peers ADD COLUMN tokens_in INTEGER NOT NULL DEFAULT 0"); } catch {}
+try { db.run("ALTER TABLE peers ADD COLUMN tokens_out INTEGER NOT NULL DEFAULT 0"); } catch {}
 db.run("UPDATE files SET path = filename WHERE path = ''");
 
 // --- WebSocket clients ---
@@ -296,6 +298,7 @@ const selectLatestByPath = db.prepare("SELECT * FROM files WHERE channel = ? AND
 const deleteFile = db.prepare("DELETE FROM files WHERE id = ?");
 
 const updateLastSeen = db.prepare("UPDATE peers SET last_seen = ? WHERE id = ?");
+const updateTokens = db.prepare("UPDATE peers SET tokens_in = ?, tokens_out = ? WHERE id = ?");
 const updateSummary = db.prepare("UPDATE peers SET summary = ? WHERE id = ?");
 const updateStatus = db.prepare("UPDATE peers SET status = ? WHERE id = ?");
 const selectAllPeers = db.prepare("SELECT * FROM peers WHERE status = 'approved'");
@@ -438,6 +441,9 @@ function handleAuthStatus(token: string): AuthStatusResponse | { error: string }
 
 function handleHeartbeat(body: HeartbeatRequest): { role: string; abort: boolean } {
   updateLastSeen.run(new Date().toISOString(), body.id);
+  if (body.tokens_in !== undefined || body.tokens_out !== undefined) {
+    updateTokens.run(body.tokens_in ?? 0, body.tokens_out ?? 0, body.id);
+  }
   const peer = selectPeerById.get(body.id) as Peer | null;
   if (peer) broadcast({ type: "peer_updated", peer });
   return { role: peer?.role ?? "", abort: abortedChannels.has(peer?.channel ?? "") };
