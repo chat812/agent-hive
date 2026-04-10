@@ -30,6 +30,7 @@ export interface Channel {
   created_at: string;
   peers: Peer[];
   roles: ChannelRole[];
+  aborted: boolean;
 }
 
 export interface Message {
@@ -52,12 +53,15 @@ export interface ChannelMemoryEntry {
 
 export interface FileEntry {
   id: string;
-  filename: string;
+  path: string;        // logical path e.g. "datasets/model.pkl"
+  version: number;     // auto-incremented per path per channel
+  filename: string;    // original filename
   peer_id: string;
   peer_name: string;
   channel: string;
   cwd: string;
   size: number;
+  sha256: string;
   uploaded_at: string;
 }
 
@@ -141,4 +145,6 @@ export type WsEvent =
   | { type: "memory_updated"; channel: string; key: string; written_by: string; written_at: string; size: number; deleted?: boolean }
   | { type: "file_uploaded"; file: FileEntry }
   | { type: "file_deleted"; file_id: string; channel: string }
+  | { type: "channel_aborted"; name: string }
+  | { type: "channel_resumed"; name: string }
   | { type: "snapshot"; peers: Peer[]; recent_messages: Message[]; channels: Channel[] };

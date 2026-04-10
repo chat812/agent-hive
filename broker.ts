@@ -182,12 +182,15 @@ db.run(`
 db.run(`
   CREATE TABLE IF NOT EXISTS files (
     id TEXT PRIMARY KEY,
+    path TEXT NOT NULL DEFAULT '',
+    version INTEGER NOT NULL DEFAULT 1,
     filename TEXT NOT NULL,
     peer_id TEXT NOT NULL,
     peer_name TEXT NOT NULL DEFAULT '',
     channel TEXT NOT NULL DEFAULT 'main',
     cwd TEXT NOT NULL DEFAULT '',
     size INTEGER NOT NULL DEFAULT 0,
+    sha256 TEXT NOT NULL DEFAULT '',
     uploaded_at TEXT NOT NULL
   )
 `);
@@ -200,10 +203,15 @@ try { db.run("ALTER TABLE peers ADD COLUMN name TEXT NOT NULL DEFAULT ''"); } ca
 try { db.run("ALTER TABLE peers ADD COLUMN channel TEXT NOT NULL DEFAULT 'main'"); } catch {}
 try { db.run("ALTER TABLE messages ADD COLUMN channel TEXT NOT NULL DEFAULT 'main'"); } catch {}
 try { db.run("ALTER TABLE peers ADD COLUMN role TEXT NOT NULL DEFAULT ''"); } catch {}
+try { db.run("ALTER TABLE files ADD COLUMN path TEXT NOT NULL DEFAULT ''"); } catch {}
+try { db.run("ALTER TABLE files ADD COLUMN version INTEGER NOT NULL DEFAULT 1"); } catch {}
+try { db.run("ALTER TABLE files ADD COLUMN sha256 TEXT NOT NULL DEFAULT ''"); } catch {}
+db.run("UPDATE files SET path = filename WHERE path = ''");
 
 // --- WebSocket clients ---
 
 const wsClients = new Set<any>();
+const abortedChannels = new Set<string>();
 
 function broadcast(event: WsEvent) {
   const data = JSON.stringify(event);
@@ -280,9 +288,11 @@ const selectMemoryEntry = db.prepare("SELECT key, value, written_by, written_at,
 const deleteMemoryEntry = db.prepare("DELETE FROM channel_memory WHERE channel = ? AND key = ?");
 const deleteChannelMemory = db.prepare("DELETE FROM channel_memory WHERE channel = ?");
 const selectMemoryKeyNames = db.prepare("SELECT key FROM channel_memory WHERE channel = ? ORDER BY key ASC");
-const insertFile = db.prepare("INSERT INTO files (id, filename, peer_id, peer_name, channel, cwd, size, uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+const insertFile = db.prepare("INSERT INTO files (id, path, version, filename, peer_id, peer_name, channel, cwd, size, sha256, uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 const selectFileById = db.prepare("SELECT * FROM files WHERE id = ?");
-const selectFilesByChannel = db.prepare("SELECT * FROM files WHERE channel = ? ORDER BY uploaded_at DESC");
+const selectLatestFilesByChannel = db.prepare(`SELECT f.* FROM files f WHERE f.channel = ? AND f.version = (SELECT MAX(version) FROM files f2 WHERE f2.channel = f.channel AND f2.path = f.path) ORDER BY f.uploaded_at DESC`);
+const selectAllFilesByChannel = db.prepare("SELECT * FROM files WHERE channel = ? ORDER BY path, version DESC");
+const selectLatestByPath = db.prepare("SELECT * FROM files WHERE channel = ? AND path = ? ORDER BY version DESC LIMIT 1");
 const deleteFile = db.prepare("DELETE FROM files WHERE id = ?");
 
 const updateLastSeen = db.prepare("UPDATE peers SET last_seen = ? WHERE id = ?");
@@ -426,11 +436,11 @@ function handleAuthStatus(token: string): AuthStatusResponse | { error: string }
   return { status: peer.status, peer_id: peer.id, channel: peer.channel, role: peer.role };
 }
 
-function handleHeartbeat(body: HeartbeatRequest): { role: string } {
+function handleHeartbeat(body: HeartbeatRequest): { role: string; abort: boolean } {
   updateLastSeen.run(new Date().toISOString(), body.id);
   const peer = selectPeerById.get(body.id) as Peer | null;
   if (peer) broadcast({ type: "peer_updated", peer });
-  return { role: peer?.role ?? "" };
+  return { role: peer?.role ?? "", abort: abortedChannels.has(peer?.channel ?? "") };
 }
 
 function handleSetSummary(body: SetSummaryRequest): void {
@@ -492,6 +502,31 @@ function handleSendMessage(body: SendMessageRequest): { ok: boolean; error?: str
   return { ok: true };
 }
 
+function handleBroadcastMessage(body: { from_id: string; text: string }): { ok: boolean; count: number; error?: string } {
+  const sender = selectPeerById.get(body.from_id) as Peer | null;
+  if (!sender) return { ok: false, count: 0, error: "Peer not found" };
+  const peers = selectPeersByChannel.all(sender.channel) as Peer[];
+  const now = new Date().toISOString();
+  let count = 0;
+  for (const target of peers) {
+    if (target.id === body.from_id) continue;
+    if (target.status !== "approved" && target.status !== "offline") continue;
+    insertMessage.run(body.from_id, target.id, body.text, now, sender.channel);
+    const msg: Message = {
+      id: 0,
+      from_id: body.from_id,
+      to_id: target.id,
+      text: body.text,
+      sent_at: now,
+      channel: sender.channel,
+      delivered: false,
+    };
+    broadcast({ type: "message_sent", message: msg });
+    count++;
+  }
+  return { ok: true, count };
+}
+
 function handlePollMessages(body: PollMessagesRequest): PollMessagesResponse {
   const messages = selectUndelivered.all(body.id) as Message[];
   for (const msg of messages) {
@@ -526,6 +561,7 @@ function getChannelsWithPeers(): Channel[] {
     created_at: ch.created_at,
     peers: selectPeersByChannel.all(ch.name) as Peer[],
     roles: selectRolesByChannel.all(ch.name) as { name: string; description: string }[],
+    aborted: abortedChannels.has(ch.name),
   }));
 }
 
@@ -533,22 +569,49 @@ function handleListChannels(): Channel[] {
   return getChannelsWithPeers();
 }
 
-async function handleFileUpload(body: { peer_id: string; filename: string; content_b64: string; channel?: string }): Promise<{ ok: boolean; file_id?: string; error?: string }> {
-  const peer = selectPeerById.get(body.peer_id) as Peer | null;
-  if (!peer) return { ok: false, error: "Peer not found" };
-  const filename = (body.filename ?? "file").replace(/[^a-zA-Z0-9._\-]/g, "_").slice(0, 255);
-  if (!filename) return { ok: false, error: "Invalid filename" };
-  const contentBuf = Buffer.from(body.content_b64, "base64");
-  const size = contentBuf.length;
-  if (size > 10 * 1024 * 1024) return { ok: false, error: "File too large (max 10MB)" };
+async function handleFileUpload(req: Request): Promise<Response> {
+  let formData: FormData;
+  try {
+    formData = await req.formData();
+  } catch {
+    return Response.json({ ok: false, error: "Expected multipart/form-data" }, { status: 400 });
+  }
+
+  const file = formData.get("file") as File | null;
+  if (!file) return Response.json({ ok: false, error: "No file in request" }, { status: 400 });
+
+  const peer_id = (formData.get("peer_id") as string) || "";
+  const store_path_param = (formData.get("store_path") as string) || "";
+  const channel_param = (formData.get("channel") as string) || "";
+
+  const peer = selectPeerById.get(peer_id) as Peer | null;
+  if (!peer) return Response.json({ ok: false, error: "Peer not found" });
+
+  const channel = channel_param || peer.channel || "main";
+  const filename = file.name.replace(/[^a-zA-Z0-9._\-]/g, "_").slice(0, 255) || "file";
+  const logical_path = store_path_param || filename;
+
+  const bytes = await file.arrayBuffer();
+  const buffer = Buffer.from(bytes);
+  const size = buffer.length;
+
+  const hasher = new Bun.CryptoHasher("sha256");
+  hasher.update(buffer);
+  const sha256 = hasher.digest("hex");
+
+  const { v: maxVer } = db.query("SELECT COALESCE(MAX(version), 0) as v FROM files WHERE channel = ? AND path = ?").get(channel, logical_path) as { v: number };
+  const version = (maxVer ?? 0) + 1;
+
   const file_id = generateId();
   const now = new Date().toISOString();
-  const channel = body.channel ?? peer.channel ?? "main";
-  await Bun.write(`${FILES_DIR}/${file_id}`, contentBuf);
-  insertFile.run(file_id, filename, peer.id, peer.name, channel, peer.cwd, size, now);
+
+  await Bun.write(`${FILES_DIR}/${file_id}`, buffer);
+  insertFile.run(file_id, logical_path, version, filename, peer.id, peer.name, channel, peer.cwd, size, sha256, now);
+
   const fileEntry = selectFileById.get(file_id) as FileEntry;
   broadcast({ type: "file_uploaded", file: fileEntry });
-  return { ok: true, file_id };
+
+  return Response.json({ ok: true, file_id, version, path: logical_path });
 }
 
 function handleFileDelete(body: { file_id: string }): { ok: boolean; error?: string } {
@@ -593,9 +656,9 @@ function handleLeaveChannel(body: { id: string }): { ok: boolean; error?: string
   return { ok: true };
 }
 
-function handleJoinChannel(body: { id: string; channel: string }): { ok: boolean; channel: string; role: string; memory_keys: string[]; error?: string } {
+function handleJoinChannel(body: { id: string; channel: string }): { ok: boolean; channel: string; role: string; memory_keys: string[]; files: FileEntry[]; aborted: boolean; error?: string } {
   const peer = selectPeerById.get(body.id) as Peer | null;
-  if (!peer) return { ok: false, channel: "", role: "", memory_keys: [], error: "Peer not found" };
+  if (!peer) return { ok: false, channel: "", role: "", memory_keys: [], files: [], aborted: false, error: "Peer not found" };
   const name = sanitizeChannelName(body.channel ?? "main");
 
   // Verify channel exists (main always exists)
@@ -604,7 +667,7 @@ function handleJoinChannel(body: { id: string; channel: string }): { ok: boolean
     updatePeerChannel.run("main", body.id);
     const updated = selectPeerById.get(body.id) as Peer;
     broadcast({ type: "peer_updated", peer: updated });
-    return { ok: false, channel: "main", role: "", memory_keys: [], error: `Channel #${name} does not exist` };
+    return { ok: false, channel: "main", role: "", memory_keys: [], files: [], aborted: false, error: `Channel #${name} does not exist` };
   }
 
   // Leave current channel first (broadcast peer_updated from old channel)
@@ -619,7 +682,8 @@ function handleJoinChannel(body: { id: string; channel: string }): { ok: boolean
   const updated = selectPeerById.get(body.id) as Peer;
   upsertLastChannel.run(updated.hostname, updated.cwd, name);
   broadcast({ type: "peer_updated", peer: updated });
-  return { ok: true, channel: name, role, memory_keys };
+  const channel_files = selectLatestFilesByChannel.all(name) as FileEntry[];
+  return { ok: true, channel: name, role, memory_keys, files: channel_files, aborted: abortedChannels.has(name) };
 }
 
 // --- Dashboard asset paths ---
@@ -661,6 +725,20 @@ Bun.serve({
       }
       if (path === "/health") {
         return Response.json({ status: "ok", peers: (selectAllPeers.all() as Peer[]).length });
+      }
+      if (path.startsWith("/files/latest/")) {
+        // /files/latest/:channel/:path
+        const rest = path.slice("/files/latest/".length); // "channel/logical/path"
+        const slashIdx = rest.indexOf("/");
+        if (slashIdx === -1) return new Response("Bad request", { status: 400 });
+        const channel = rest.slice(0, slashIdx);
+        const logicalPath = rest.slice(slashIdx + 1);
+        const meta = selectLatestByPath.get(channel, logicalPath) as FileEntry | null;
+        if (!meta) return new Response("Not found", { status: 404 });
+        const file = Bun.file(`${FILES_DIR}/${meta.id}`);
+        return new Response(file, {
+          headers: { "Content-Disposition": `attachment; filename="${meta.filename}"` },
+        });
       }
       if (path.startsWith("/files/")) {
         const file_id = path.slice(7);
@@ -804,6 +882,16 @@ Bun.serve({
       }
     }
 
+    // Multipart file upload — handled before req.json() body parse
+    if (path === "/file-upload") {
+      if (!isValidAuth(authHeader)) return Response.json({ error: "Unauthorized" }, { status: 401 });
+      try {
+        return await handleFileUpload(req);
+      } catch (e) {
+        return Response.json({ error: String(e) }, { status: 500 });
+      }
+    }
+
     // --- Authenticated endpoints (approved session token or master key) ---
 
     if (!isValidAuth(authHeader)) {
@@ -884,11 +972,58 @@ case "/set-role": {
           }
           return Response.json({ ok: true });
         }
-        case "/file-upload":
-          return Response.json(await handleFileUpload(body as { peer_id: string; filename: string; content_b64: string; channel?: string }));
         case "/file-list": {
+          const { channel, all_versions } = body as { channel: string; all_versions?: boolean };
+          const files = all_versions
+            ? selectAllFilesByChannel.all(channel ?? "main")
+            : selectLatestFilesByChannel.all(channel ?? "main");
+          return Response.json({ files });
+        }
+        case "/file-latest": {
+          const { channel, path: logicalPath } = body as { channel: string; path: string };
+          const meta = selectLatestByPath.get(channel ?? "main", logicalPath) as FileEntry | null;
+          if (!meta) return Response.json({ error: "Not found" }, { status: 404 });
+          return Response.json(meta);
+        }
+        case "/broadcast-message":
+          return Response.json(handleBroadcastMessage(body as { from_id: string; text: string }));
+        case "/channel-abort": {
           const { channel } = body as { channel: string };
-          return Response.json({ files: selectFilesByChannel.all(channel ?? "main") });
+          abortedChannels.add(channel ?? "main");
+          broadcast({ type: "channel_aborted", name: channel ?? "main" });
+          return Response.json({ ok: true });
+        }
+        case "/channel-resume": {
+          const { channel } = body as { channel: string };
+          abortedChannels.delete(channel ?? "main");
+          broadcast({ type: "channel_resumed", name: channel ?? "main" });
+          return Response.json({ ok: true });
+        }
+        case "/channel-reset": {
+          if (!isMasterKey(authHeader)) return Response.json({ error: "Master key required" }, { status: 401 });
+          const { channel } = body as { channel: string };
+          const ch = channel ?? "main";
+          // 1. Clear memory
+          const keys = (selectMemoryKeyNames.all(ch) as { key: string }[]).map(r => r.key);
+          deleteChannelMemory.run(ch);
+          for (const key of keys) {
+            broadcast({ type: "memory_updated", channel: ch, key, written_by: "admin", written_at: new Date().toISOString(), size: 0, deleted: true });
+          }
+          // 2. Clear undelivered messages for all peers in this channel
+          db.run("DELETE FROM messages WHERE delivered = 0 AND to_id IN (SELECT id FROM peers WHERE channel = ?)", [ch]);
+          // 3. Clear abort flag
+          abortedChannels.delete(ch);
+          broadcast({ type: "channel_resumed", name: ch });
+          // 4. Send reset notification to each approved peer
+          const resetPeers = selectPeersByChannel.all(ch) as Peer[];
+          const resetNow = new Date().toISOString();
+          const resetMsg = `🔄 FULL RESET — This channel has been reset for a new job.\n\nIMMEDIATELY:\n- Stop any current task\n- Disregard ALL previous plans, assignments, and results from this session\n- Clear any internal tracking from your context\n- Wait for the Master to send a new goal\n\nYou are starting fresh. All previous context is invalid.`;
+          for (const peer of resetPeers) {
+            if (peer.status !== "approved") continue;
+            insertMessage.run("system", peer.id, resetMsg, resetNow, ch);
+            broadcast({ type: "message_sent", message: { id: 0, from_id: "system", to_id: peer.id, text: resetMsg, sent_at: resetNow, channel: ch, delivered: false } });
+          }
+          return Response.json({ ok: true });
         }
         default:
           return Response.json({ error: "not found" }, { status: 404 });

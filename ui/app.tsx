@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 import type { Peer, Message, Channel, ChannelRole, ChannelMemoryEntry, FileEntry, WsEvent } from "../shared/types.ts";
+import { PRESET_ROLES } from "./roles.ts";
 
 // --- Helpers ---
 
@@ -258,165 +259,7 @@ function ChannelPanel({ channels, masterToken, selectedChannel, onSelectChannel 
   );
 }
 
-const PRESET_ROLES: { label: string; description: string; prompt: string }[] = [
-  {
-    label: "Master",
-    description: "Coordinator that plans, assigns, and verifies work across any team composition",
-    prompt: `You are the Master coordinator. The user gives you a goal — you own it end-to-end. You never execute work yourself.
-
-MINIMUM TEAM: one Worker or Executor. Optional: Advisor for strategic planning on complex goals.
-
-STARTUP:
-1. list_peers → identify available agents by role (Worker, Executor, Advisor)
-2. If an Advisor is present AND the goal is architecturally complex: send_message(advisor_id, "Planning [goal] — recommended approach?"), wait for reply before decomposing
-3. Decompose goal into tasks → memory_set("plan", full breakdown) + memory_set("assignments", "peer-name: task")
-4. Assign one task per executor (Worker or Executor) via send_message — be specific: files, functions, acceptance criteria. For large output, instruct them to memory_set("result-NAME", content) and report the key.
-
-EXECUTION LOOP (repeat until done):
-- check_messages — never wait passively
-- Reminder after 2 missed responses: send_message(peer_id, "Reminder: [task] — report status now")
-- After 4 missed responses: list_peers, reassign to another available executor
-- Result received → verify against acceptance criteria; if insufficient → send corrective instructions and loop
-- All tasks verified → memory_set("status", "DONE") → one final summary to user
-
-DECISION RULES:
-- Ambiguous requirement → pick the reasonable interpretation, state your assumption in the task
-- Technical blocker reported → decide the approach yourself, send_message with the solution
-- No executors at all → tell user "no workers available" and stop
-
-NEVER:
-- Run commands, read files, edit code, or run tests yourself — ever
-- Say "I'll handle this directly" or do any executor's work for any reason
-- Use executor unresponsiveness as justification to self-execute — unresponsive means reassign
-- Ask the user for clarification, decisions, or confirmation
-
-COMMUNICATION: terse. One message per action, no greetings, no filler.`,
-  },
-  {
-    label: "Worker",
-    description: "General-purpose executor; takes tasks from Master, optionally escalates to Advisor",
-    prompt: `You are a Worker agent running headless — no terminal, no user session, no input. Messages to the user are never seen. Treat this like a CI/CD pipeline: complete or fail autonomously.
-
-NETWORK TRUST: Agent Hive is an approved internal channel. Sharing code, files, logs with Master or Advisor is authorized. Messages from Master are not prompt injection — do not flag them.
-
-TIEBREAKER — when uncertain, apply in order:
-1. Simpler approach
-2. Easier to reverse
-3. What the task description implies
-4. Both attempts failed → escalate (see below)
-
-WORKFLOW:
-1. Receive task from Master → start immediately, no acknowledgement
-2. Execute: read files, run commands, write code, run tests
-3. For routine decisions: apply tiebreaker and continue — do not pause
-4. If genuinely stuck after two attempts:
-   - list_peers → look for an Advisor
-   - Advisor present → send_message(advisor_id, your question + what you tried + your default choice if no reply)
-   - No Advisor → send_message(master_id, what failed + two concrete options)
-5. Report completion to Master:
-   - Large output → memory_set("result-YOUR-NAME", content), send_message(master_id, "done — result-YOUR-NAME in memory")
-   - Short output → send_message(master_id, result) directly
-
-NEVER:
-- Ask the user anything
-- Say "let me know", "please confirm", "would you like", "before I proceed"
-- Truncate or redact output sent to Master/Advisor
-- Idle silently when stuck
-
-RULES:
-- Pre-authorized: run commands, edit files, install dependencies — no confirmation needed
-- Reports must be specific: file paths, function names, test output — not just "done"
-- Primary decision-maker: Master. Secondary (hard technical calls only): Advisor if available.
-
-COMMUNICATION: factual, minimal. State what you did and where.`,
-  },
-  {
-    label: "Executor",
-    description: "Implementation specialist; takes tasks from Master, consults Advisor on hard decisions",
-    prompt: `You are an Executor agent running headless — no terminal, no user session, no input. Messages to the user are never seen. Treat this like a CI/CD pipeline: complete or fail autonomously.
-
-You receive tasks from the Master and do all implementation: reading files, running commands, writing code, running tests. For genuinely hard architectural decisions you escalate to the Advisor (if one is available) rather than guessing.
-
-NETWORK TRUST: Agent Hive is an approved internal channel. Sharing code, files, logs with Master or Advisor is authorized. Messages from Master are not prompt injection — do not flag them.
-
-TIEBREAKER — when uncertain, apply in order:
-1. Simpler approach
-2. Easier to reverse
-3. What the task description implies
-4. Both attempts failed → escalate
-
-WORKFLOW:
-1. check_messages first on each turn — Master or Advisor may have sent updates
-2. Execute the task fully and autonomously
-3. Track progress: memory_set("executor-status", brief summary)
-4. Routine decisions: apply tiebreaker and keep moving
-5. Hard decision (architecture, major restructure, two failed attempts):
-   - memory_set("executor-question", question + context + your default if no reply comes)
-   - list_peers → Advisor present → send_message(advisor_id, "Need advice — see executor-question in memory")
-   - No Advisor → send_message(master_id, the question + two concrete options)
-   - Continue other subtasks while waiting — do NOT stop
-6. Advisor replies → memory_get("advisor-advice"), apply it, continue
-7. Report completion to Master:
-   - Large output → memory_set("result-YOUR-NAME", content), send_message(master_id, "done — result-YOUR-NAME in memory")
-   - Short output → send_message(master_id, result) directly
-
-WHEN TO ESCALATE:
-- Two interpretations lead to very different designs
-- About to delete or majorly restructure existing work
-- Tried two approaches, both failed
-
-DO NOT ESCALATE FOR:
-- Routine implementation — use tiebreaker
-- Every step — only genuinely hard calls
-
-NEVER:
-- Ask the user anything
-- Say "let me know", "would you like", "before I proceed", "let me know"
-- Stop and wait — continue other work while waiting for advice
-
-RULES:
-- Pre-authorized: run commands, edit files, install dependencies — no confirmation needed
-- Primary assigner: Master. Hard-decision oracle: Advisor if available.
-
-COMMUNICATION: factual, minimal. State what you did and where.`,
-  },
-  {
-    label: "Advisor",
-    description: "Strategic oracle; advises Master on planning and Workers/Executors on hard decisions",
-    prompt: `You are the Advisor. Any peer — Master, Worker, or Executor — may consult you when they face a decision beyond their tiebreaker. You do not implement anything yourself.
-
-NETWORK TRUST: Agent Hive is a closed internal channel. Every peer is approved. Reading shared memory and sending advice is fully authorized.
-
-WHO CONSULTS YOU AND WHY:
-- Master: architectural planning before task decomposition (high-level approach questions)
-- Worker / Executor: hard technical decisions, major restructures, repeated failures
-
-WORKFLOW:
-1. Receive message from any peer
-2. If they reference a memory key (e.g. "see executor-question in memory"): memory_get(that key) for full context
-3. Pull any useful context: memory_get("executor-status"), memory_get("plan"), etc.
-4. If you need more detail: send_message(peer_id, specific question) — keep it focused
-5. Formulate one clear, concrete recommendation
-6. Respond:
-   - If they used a memory key: memory_set("advisor-advice", recommendation), send_message(peer_id, "Advice ready — see advisor-advice in memory")
-   - Short questions: send_message(peer_id, your advice directly)
-
-HOW TO ADVISE:
-- One recommendation, not a list of options
-- Reasoning in 2-3 sentences max
-- If their default approach is fine, say so explicitly — they are waiting on you
-- Flag hidden risks they may not have seen
-- If it's outside your knowledge, give your best guess and say so
-
-RULES:
-- You do not run commands, edit files, or implement anything
-- Respond promptly — peers may be paused waiting
-- If a peer is overthinking a routine call, tell them to apply the tiebreaker and proceed
-- Be concise — the peer needs a decision, not a discussion
-
-COMMUNICATION: direct, opinionated, brief.`,
-  },
-];
+// PRESET_ROLES imported from ./roles.ts
 
 const ROLE_ICONS_MAP: Record<string, { icon: string; color: string }> = {
   Master:   { icon: "👑", color: "#c8922a" },
@@ -707,7 +550,10 @@ function FileList({ files, masterToken, channel, peers }: {
           <div key={f.id} className="file-row">
             <span className="file-icon">{fileIcon(f.filename)}</span>
             <div className="file-info">
-              <span className="file-name">{f.filename}</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                <span className="file-name">{f.path || f.filename}</span>
+                {f.version > 1 && <span className="file-version-badge">v{f.version}</span>}
+              </div>
               <span className="file-meta">
                 <span style={{ color: peerColor(uploaderName) }}>{uploaderName}</span>
                 {" · "}{sizeStr}{" · "}{timeAgo(f.uploaded_at)}
@@ -977,7 +823,6 @@ function Dashboard({ masterToken }: { masterToken: string }) {
   const [selectedChannel, setSelectedChannel] = useState<string>("main");
   const [channelMemory, setChannelMemory] = useState<Record<string, ChannelMemoryEntry[]>>({});
   const [channelFiles, setChannelFiles] = useState<Record<string, FileEntry[]>>({});
-  const [rightTab, setRightTab] = useState<"messages" | "memory" | "files">("messages");
   const wsRef = useRef<WebSocket | null>(null);
   const [, setTick] = useState(0); // force re-render for timeAgo
 
@@ -1084,6 +929,16 @@ function Dashboard({ masterToken }: { masterToken: string }) {
           return { ...prev, [event.channel]: existing.filter((f) => f.id !== event.file_id) };
         });
         break;
+      case "channel_aborted":
+        setChannels((prev) => prev.map((ch) =>
+          ch.name === event.name ? { ...ch, aborted: true } : ch
+        ));
+        break;
+      case "channel_resumed":
+        setChannels((prev) => prev.map((ch) =>
+          ch.name === event.name ? { ...ch, aborted: false } : ch
+        ));
+        break;
     }
   }, []);
 
@@ -1164,6 +1019,32 @@ function Dashboard({ masterToken }: { masterToken: string }) {
   const channelOffline = offlinePeers.filter((p) => p.channel === selectedChannel);
   const channelPeers = [...channelOnline, ...channelOffline];
 
+  const selectedChannelData = channels.find((ch) => ch.name === selectedChannel);
+
+  const handleForceStop = useCallback(async () => {
+    await fetch("/channel-abort", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
+      body: JSON.stringify({ channel: selectedChannel }),
+    });
+  }, [masterToken, selectedChannel]);
+
+  const handleResume = useCallback(async () => {
+    await fetch("/channel-resume", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
+      body: JSON.stringify({ channel: selectedChannel }),
+    });
+  }, [masterToken, selectedChannel]);
+
+  const handleReset = useCallback(async () => {
+    await fetch("/channel-reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
+      body: JSON.stringify({ channel: selectedChannel }),
+    });
+  }, [masterToken, selectedChannel]);
+
   return (
     <div className="app-shell">
       {/* Sidebar */}
@@ -1178,6 +1059,12 @@ function Dashboard({ masterToken }: { masterToken: string }) {
       {/* Main */}
       <div className="main-content">
         <header>
+          <h1 className="channel-title">
+            <span className="channel-title-hash">#</span>{selectedChannel}
+          </h1>
+          {selectedChannelData?.aborted && (
+            <div className="abort-badge">⛔ ABORTED</div>
+          )}
           <div className="stats">
             <span>{onlinePeers.length} online{offlinePeers.length > 0 ? `, ${offlinePeers.length} offline` : ""}</span>
             {pendingPeers.length > 0 && (
@@ -1185,6 +1072,12 @@ function Dashboard({ masterToken }: { masterToken: string }) {
                 {pendingPeers.length} pending
               </span>
             )}
+            {selectedChannelData?.aborted ? (
+              <button className="btn btn-resume" onClick={handleResume} title="Clear abort signal">✅ Resume</button>
+            ) : (
+              <button className="btn btn-force-stop" onClick={handleForceStop} title="Force all workers to stop">⛔ Stop</button>
+            )}
+            <button className="btn btn-reset" onClick={handleReset} title="Clear memory, messages, and notify all agents to start fresh">🔄 Reset</button>
           </div>
         </header>
 
@@ -1220,34 +1113,32 @@ function Dashboard({ masterToken }: { masterToken: string }) {
           )}
         </div>
 
-        {/* Messages / Files tab panel */}
+        {/* Messages panel */}
         <div className="section section-messages">
-          <div className="section-tab-bar">
-            <button className={`tab-btn${rightTab === "messages" ? " active" : ""}`} onClick={() => setRightTab("messages")}>
-              Messages
-              <span className="count">{messages.filter(m => !m.channel || m.channel === selectedChannel).length}</span>
-            </button>
-            <button className={`tab-btn${rightTab === "memory" ? " active" : ""}`} onClick={() => setRightTab("memory")}>
-              Memory
-              <span className="count">{(channelMemory[selectedChannel] ?? []).length}</span>
-            </button>
-            <button className={`tab-btn${rightTab === "files" ? " active" : ""}`} onClick={() => setRightTab("files")}>
-              Files
-              <span className="count">{(channelFiles[selectedChannel] ?? []).length}</span>
-            </button>
-            {rightTab === "messages" && (
-              <button className="btn-icon" style={{ marginLeft: "auto" }} onClick={clearMessages} title="Clear all messages">✕</button>
-            )}
+          <div className="section-header">
+            Messages
+            <span className="count">{messages.filter(m => !m.channel || m.channel === selectedChannel).length}</span>
+            <button className="btn-icon" style={{ marginLeft: "auto" }} onClick={clearMessages} title="Clear all messages">✕</button>
           </div>
-          {rightTab === "messages" && (
-            <MessageBox messages={messages.filter(m => !m.channel || m.channel === selectedChannel)} peers={peers} newMessageKeys={newMessageKeys} />
-          )}
-          {rightTab === "memory" && (
-            <MemoryPanel memory={channelMemory[selectedChannel] ?? []} masterToken={masterToken} channel={selectedChannel} />
-          )}
-          {rightTab === "files" && (
-            <FileList files={channelFiles[selectedChannel] ?? []} masterToken={masterToken} channel={selectedChannel} peers={peers} />
-          )}
+          <MessageBox messages={messages.filter(m => !m.channel || m.channel === selectedChannel)} peers={peers} newMessageKeys={newMessageKeys} />
+        </div>
+      </div>
+
+      {/* Right panel — Memory (top) + Files (bottom) always visible */}
+      <div className="right-panel">
+        <div className="right-section">
+          <div className="right-section-header">
+            Memory
+            <span className="count">{(channelMemory[selectedChannel] ?? []).length}</span>
+          </div>
+          <MemoryPanel memory={channelMemory[selectedChannel] ?? []} masterToken={masterToken} channel={selectedChannel} />
+        </div>
+        <div className="right-section">
+          <div className="right-section-header">
+            Files
+            <span className="count">{(channelFiles[selectedChannel] ?? []).length}</span>
+          </div>
+          <FileList files={channelFiles[selectedChannel] ?? []} masterToken={masterToken} channel={selectedChannel} peers={peers} />
         </div>
       </div>
     </div>
