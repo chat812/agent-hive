@@ -676,8 +676,7 @@ function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterTo
                 >
                   <span className={`peer-status-dot ${p.status === "offline" ? "offline" : "online"}`} />
                   <span className={`harness-badge ${getHarnessClass(p.harness)}`}>{harnessLabel(p.harness)}</span>
-                  <span className="channel-member-name" style={{ color: peerColor(p.name || p.id) }}>{p.name || p.id}</span>
-                  {p.role && <span className="member-role-badge" title={p.role}>{p.role.split(/\s+/).slice(0, 4).join(" ")}{p.role.split(/\s+/).length > 4 ? "…" : ""}</span>}
+                  <span className="channel-member-name" style={{ color: peerColor(p.name || p.id) }}>{p.name || p.id}<RoleEmoji role={p.role} /></span>
                 </div>
               ))
             )}
@@ -733,6 +732,12 @@ function peerColor(name: string): string {
   return PEER_COLORS[h % PEER_COLORS.length];
 }
 
+function RoleEmoji({ role }: { role?: string }) {
+  const icon = getRoleIcon(role ?? "");
+  if (!icon) return null;
+  return <span className="role-emoji" title={role}>{icon.label}</span>;
+}
+
 function MessageItem({ msg, peers, isNew }: { msg: Message; peers: Peer[]; isNew?: boolean }) {
   const fromPeer = peers.find((p) => p.id === msg.from_id);
   const toPeer = peers.find((p) => p.id === msg.to_id);
@@ -741,9 +746,9 @@ function MessageItem({ msg, peers, isNew }: { msg: Message; peers: Peer[]; isNew
   return (
     <div className={`message-item${isNew ? " message-new" : ""}`}>
       <div className="message-meta">
-        <span className="from" style={{ color: peerColor(fromName) }}>{fromName}</span>
+        <span className="from" style={{ color: peerColor(fromName) }}>{fromName}<RoleEmoji role={fromPeer?.role} /></span>
         <span>→</span>
-        <span className="to" style={{ color: peerColor(toName) }}>{toName}</span>
+        <span className="to" style={{ color: peerColor(toName) }}>{toName}<RoleEmoji role={toPeer?.role} /></span>
         <span>{timeAgo(msg.sent_at)}</span>
       </div>
       <div className="message-text">{msg.text}</div>

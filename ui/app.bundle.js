@@ -17955,14 +17955,11 @@ function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterTo
                   /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
                     className: "channel-member-name",
                     style: { color: peerColor(p.name || p.id) },
-                    children: p.name || p.id
-                  }, undefined, false, undefined, this),
-                  p.role && /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
-                    className: "member-role-badge",
-                    title: p.role,
                     children: [
-                      p.role.split(/\s+/).slice(0, 4).join(" "),
-                      p.role.split(/\s+/).length > 4 ? "…" : ""
+                      p.name || p.id,
+                      /* @__PURE__ */ jsx_dev_runtime.jsxDEV(RoleEmoji, {
+                        role: p.role
+                      }, undefined, false, undefined, this)
                     ]
                   }, undefined, true, undefined, this)
                 ]
@@ -18039,6 +18036,16 @@ function peerColor(name) {
     h = (Math.imul(h, 33) ^ name.charCodeAt(i)) >>> 0;
   return PEER_COLORS[h % PEER_COLORS.length];
 }
+function RoleEmoji({ role }) {
+  const icon = getRoleIcon(role ?? "");
+  if (!icon)
+    return null;
+  return /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+    className: "role-emoji",
+    title: role,
+    children: icon.label
+  }, undefined, false, undefined, this);
+}
 function MessageItem({ msg, peers, isNew }) {
   const fromPeer = peers.find((p) => p.id === msg.from_id);
   const toPeer = peers.find((p) => p.id === msg.to_id);
@@ -18053,16 +18060,26 @@ function MessageItem({ msg, peers, isNew }) {
           /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
             className: "from",
             style: { color: peerColor(fromName) },
-            children: fromName
-          }, undefined, false, undefined, this),
+            children: [
+              fromName,
+              /* @__PURE__ */ jsx_dev_runtime.jsxDEV(RoleEmoji, {
+                role: fromPeer?.role
+              }, undefined, false, undefined, this)
+            ]
+          }, undefined, true, undefined, this),
           /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
             children: "→"
           }, undefined, false, undefined, this),
           /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
             className: "to",
             style: { color: peerColor(toName) },
-            children: toName
-          }, undefined, false, undefined, this),
+            children: [
+              toName,
+              /* @__PURE__ */ jsx_dev_runtime.jsxDEV(RoleEmoji, {
+                role: toPeer?.role
+              }, undefined, false, undefined, this)
+            ]
+          }, undefined, true, undefined, this),
           /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
             children: timeAgo(msg.sent_at)
           }, undefined, false, undefined, this)
