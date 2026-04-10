@@ -623,6 +623,14 @@ function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterTo
     setActiveMemKey(null);
   };
 
+  const handleClearMemory = async () => {
+    await fetch("/memory-clear", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
+      body: JSON.stringify({ channel: ch.name }),
+    });
+  };
+
 
   return (
     <>
@@ -659,7 +667,10 @@ function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterTo
 
             {memory && memory.length > 0 && (
               <div className="memory-section">
-                <div className="memory-section-header">Memory <span className="memory-count">{memory.length}</span></div>
+                <div className="memory-section-header">
+                  Memory <span className="memory-count">{memory.length}</span>
+                  <button className="btn-icon" style={{ color: "var(--red)", marginLeft: "auto" }} onClick={handleClearMemory} title="Clear all memory in this channel">✕</button>
+                </div>
                 {memory.map((m) => (
                   <div key={m.key} className="memory-row clickable" onClick={() => setActiveMemKey(m)}>
                     <span className="memory-key">{m.key}</span>

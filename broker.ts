@@ -808,6 +808,16 @@ case "/set-role": {
           broadcast({ type: "memory_updated", channel, key, written_by: peer_id, written_at: new Date().toISOString(), size: 0, deleted: true });
           return Response.json({ ok: true });
         }
+        case "/memory-clear": {
+          if (!isMasterKey(authHeader)) return Response.json({ error: "Unauthorized" }, { status: 401 });
+          const { channel } = body as { channel: string };
+          const keys = (selectMemoryKeyNames.all(channel) as { key: string }[]).map(r => r.key);
+          deleteChannelMemory.run(channel);
+          for (const key of keys) {
+            broadcast({ type: "memory_updated", channel, key, written_by: "admin", written_at: new Date().toISOString(), size: 0, deleted: true });
+          }
+          return Response.json({ ok: true });
+        }
         default:
           return Response.json({ error: "not found" }, { status: 404 });
       }

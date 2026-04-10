@@ -17872,6 +17872,13 @@ function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterTo
     });
     setActiveMemKey(null);
   };
+  const handleClearMemory = async () => {
+    await fetch("/memory-clear", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
+      body: JSON.stringify({ channel: ch.name })
+    });
+  };
   return /* @__PURE__ */ jsx_dev_runtime.jsxDEV(jsx_dev_runtime.Fragment, {
     children: [
       /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
@@ -17950,6 +17957,13 @@ function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterTo
                       /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
                         className: "memory-count",
                         children: memory.length
+                      }, undefined, false, undefined, this),
+                      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
+                        className: "btn-icon",
+                        style: { color: "var(--red)", marginLeft: "auto" },
+                        onClick: handleClearMemory,
+                        title: "Clear all memory in this channel",
+                        children: "✕"
                       }, undefined, false, undefined, this)
                     ]
                   }, undefined, true, undefined, this),
