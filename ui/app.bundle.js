@@ -17640,21 +17640,24 @@ RULES:
 COMMUNICATION: direct, opinionated, brief. The Executor needs a decision, not a discussion.`
   }
 ];
-var ROLE_BADGE_COLORS = {
-  Master: "#e05c5c",
-  Worker: "#5b8ce6",
-  Executor: "#e0854a",
-  Advisor: "#7dc96b"
+var ROLE_ICONS_MAP = {
+  Master: { icon: "\uD83D\uDC51", color: "#c8922a" },
+  Worker: { icon: "\uD83D\uDD28", color: "#5b8ce6" },
+  Executor: { icon: "⚡", color: "#9b6fe6" },
+  Advisor: { icon: "\uD83C\uDF93", color: "#7dc96b" }
 };
 function getRoleIcon(role) {
   if (!role)
     return null;
   const preset = PRESET_ROLES.find((r) => r.prompt === role);
-  if (preset)
-    return { label: preset.label[0], color: ROLE_BADGE_COLORS[preset.label] ?? "#888" };
+  if (preset) {
+    const m = ROLE_ICONS_MAP[preset.label];
+    if (m)
+      return { label: m.icon, color: m.color };
+  }
   const firstWord = role.trim().split(/\s+/)[0];
   if (firstWord)
-    return { label: firstWord[0].toUpperCase(), color: "#888" };
+    return { label: firstWord[0].toUpperCase(), color: "#666" };
   return null;
 }
 function RolePopup({ peer, masterToken, onClose }) {

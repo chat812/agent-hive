@@ -444,19 +444,22 @@ COMMUNICATION: direct, opinionated, brief. The Executor needs a decision, not a 
   },
 ];
 
-const ROLE_BADGE_COLORS: Record<string, string> = {
-  Master: "#e05c5c",
-  Worker: "#5b8ce6",
-  Executor: "#e0854a",
-  Advisor: "#7dc96b",
+const ROLE_ICONS_MAP: Record<string, { icon: string; color: string }> = {
+  Master:   { icon: "👑", color: "#c8922a" },
+  Worker:   { icon: "🔨", color: "#5b8ce6" },
+  Executor: { icon: "⚡", color: "#9b6fe6" },
+  Advisor:  { icon: "🎓", color: "#7dc96b" },
 };
 
 function getRoleIcon(role: string): { label: string; color: string } | null {
   if (!role) return null;
   const preset = PRESET_ROLES.find((r) => r.prompt === role);
-  if (preset) return { label: preset.label[0], color: ROLE_BADGE_COLORS[preset.label] ?? "#888" };
+  if (preset) {
+    const m = ROLE_ICONS_MAP[preset.label];
+    if (m) return { label: m.icon, color: m.color };
+  }
   const firstWord = role.trim().split(/\s+/)[0];
-  if (firstWord) return { label: firstWord[0].toUpperCase(), color: "#888" };
+  if (firstWord) return { label: firstWord[0].toUpperCase(), color: "#666" };
   return null;
 }
 

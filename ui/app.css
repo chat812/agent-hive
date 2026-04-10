@@ -302,13 +302,13 @@ header h1 {
 /* Role badge on top-right of avatar */
 .role-icon-badge {
   position: absolute;
-  top: -5px;
-  right: -5px;
-  width: 17px;
-  height: 17px;
+  top: -6px;
+  right: -6px;
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
-  font-size: 9px;
-  font-weight: 800;
+  font-size: 12px;
+  font-weight: 700;
   color: #fff;
   display: flex;
   align-items: center;
@@ -316,6 +316,7 @@ header h1 {
   border: 2px solid var(--bg);
   letter-spacing: 0;
   pointer-events: none;
+  line-height: 1;
 }
 
 .bubble-dot {
