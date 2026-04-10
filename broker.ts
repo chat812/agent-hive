@@ -10,6 +10,8 @@
  */
 
 import { Database } from "bun:sqlite";
+import { mkdirSync } from "node:fs";
+import { unlinkSync } from "node:fs";
 import type {
   RegisterRequest,
   RegisterResponse,
@@ -25,6 +27,7 @@ import type {
   Message,
   Channel,
   WsEvent,
+  FileEntry,
 } from "./shared/types.ts";
 import {
   loadOrCreateMasterKey,
@@ -41,6 +44,10 @@ const DB_PATH =
   `${process.env.HOME ?? process.env.USERPROFILE}/.agent-hive.db`;
 const STALE_THRESHOLD_MS = 60_000; // 60s — mark offline after 4 missed heartbeats
 const REMOVE_THRESHOLD_MS = 300_000; // 5 min — actually delete offline peers
+
+const FILES_DIR = process.env.AGENT_HIVE_FILES_DIR ??
+  `${process.env.HOME ?? process.env.USERPROFILE}/.agent-hive-files`;
+mkdirSync(FILES_DIR, { recursive: true });
 
 // --- Master key ---
 
@@ -172,6 +179,19 @@ db.run(`
   )
 `);
 
+db.run(`
+  CREATE TABLE IF NOT EXISTS files (
+    id TEXT PRIMARY KEY,
+    filename TEXT NOT NULL,
+    peer_id TEXT NOT NULL,
+    peer_name TEXT NOT NULL DEFAULT '',
+    channel TEXT NOT NULL DEFAULT 'main',
+    cwd TEXT NOT NULL DEFAULT '',
+    size INTEGER NOT NULL DEFAULT 0,
+    uploaded_at TEXT NOT NULL
+  )
+`);
+
 // Migrate: add columns if missing (for existing DBs)
 try { db.run("ALTER TABLE peers ADD COLUMN harness TEXT NOT NULL DEFAULT 'claude-code'"); } catch {}
 try { db.run("ALTER TABLE peers ADD COLUMN hostname TEXT NOT NULL DEFAULT 'localhost'"); } catch {}
@@ -260,6 +280,10 @@ const selectMemoryEntry = db.prepare("SELECT key, value, written_by, written_at,
 const deleteMemoryEntry = db.prepare("DELETE FROM channel_memory WHERE channel = ? AND key = ?");
 const deleteChannelMemory = db.prepare("DELETE FROM channel_memory WHERE channel = ?");
 const selectMemoryKeyNames = db.prepare("SELECT key FROM channel_memory WHERE channel = ? ORDER BY key ASC");
+const insertFile = db.prepare("INSERT INTO files (id, filename, peer_id, peer_name, channel, cwd, size, uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+const selectFileById = db.prepare("SELECT * FROM files WHERE id = ?");
+const selectFilesByChannel = db.prepare("SELECT * FROM files WHERE channel = ? ORDER BY uploaded_at DESC");
+const deleteFile = db.prepare("DELETE FROM files WHERE id = ?");
 
 const updateLastSeen = db.prepare("UPDATE peers SET last_seen = ? WHERE id = ?");
 const updateSummary = db.prepare("UPDATE peers SET summary = ? WHERE id = ?");
@@ -509,6 +533,33 @@ function handleListChannels(): Channel[] {
   return getChannelsWithPeers();
 }
 
+async function handleFileUpload(body: { peer_id: string; filename: string; content_b64: string; channel?: string }): Promise<{ ok: boolean; file_id?: string; error?: string }> {
+  const peer = selectPeerById.get(body.peer_id) as Peer | null;
+  if (!peer) return { ok: false, error: "Peer not found" };
+  const filename = (body.filename ?? "file").replace(/[^a-zA-Z0-9._\-]/g, "_").slice(0, 255);
+  if (!filename) return { ok: false, error: "Invalid filename" };
+  const contentBuf = Buffer.from(body.content_b64, "base64");
+  const size = contentBuf.length;
+  if (size > 10 * 1024 * 1024) return { ok: false, error: "File too large (max 10MB)" };
+  const file_id = generateId();
+  const now = new Date().toISOString();
+  const channel = body.channel ?? peer.channel ?? "main";
+  await Bun.write(`${FILES_DIR}/${file_id}`, contentBuf);
+  insertFile.run(file_id, filename, peer.id, peer.name, channel, peer.cwd, size, now);
+  const fileEntry = selectFileById.get(file_id) as FileEntry;
+  broadcast({ type: "file_uploaded", file: fileEntry });
+  return { ok: true, file_id };
+}
+
+function handleFileDelete(body: { file_id: string }): { ok: boolean; error?: string } {
+  const meta = selectFileById.get(body.file_id) as FileEntry | null;
+  if (!meta) return { ok: false, error: "File not found" };
+  deleteFile.run(body.file_id);
+  try { unlinkSync(`${FILES_DIR}/${body.file_id}`); } catch {}
+  broadcast({ type: "file_deleted", file_id: body.file_id, channel: meta.channel });
+  return { ok: true };
+}
+
 function handleCreateChannel(body: { name: string }): { ok: boolean; error?: string } {
   const name = sanitizeChannelName(body.name ?? "");
   if (!name || name === "") return { ok: false, error: "Invalid channel name" };
@@ -611,6 +662,15 @@ Bun.serve({
       if (path === "/health") {
         return Response.json({ status: "ok", peers: (selectAllPeers.all() as Peer[]).length });
       }
+      if (path.startsWith("/files/")) {
+        const file_id = path.slice(7);
+        const meta = selectFileById.get(file_id) as FileEntry | null;
+        if (!meta) return new Response("Not found", { status: 404 });
+        const file = Bun.file(`${FILES_DIR}/${file_id}`);
+        return new Response(file, {
+          headers: { "Content-Disposition": `attachment; filename="${meta.filename}"` },
+        });
+      }
       return new Response("Not found", { status: 404 });
     }
 
@@ -689,6 +749,12 @@ Bun.serve({
       if (path === "/admin/kick-peer") return Response.json(handleLeaveChannel({ id: body.peer_id }));
       removePeer(body.peer_id);
       return Response.json({ ok: true });
+    }
+
+    if (path === "/file-delete") {
+      if (!isMasterKey(authHeader)) return Response.json({ error: "Master key required" }, { status: 403 });
+      const body = await req.json() as { file_id: string };
+      return Response.json(handleFileDelete(body));
     }
 
     // Channel management — master key only for create/remove
@@ -817,6 +883,12 @@ case "/set-role": {
             broadcast({ type: "memory_updated", channel, key, written_by: "admin", written_at: new Date().toISOString(), size: 0, deleted: true });
           }
           return Response.json({ ok: true });
+        }
+        case "/file-upload":
+          return Response.json(await handleFileUpload(body as { peer_id: string; filename: string; content_b64: string; channel?: string }));
+        case "/file-list": {
+          const { channel } = body as { channel: string };
+          return Response.json({ files: selectFilesByChannel.all(channel ?? "main") });
         }
         default:
           return Response.json({ error: "not found" }, { status: 404 });

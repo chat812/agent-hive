@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { createRoot } from "react-dom/client";
-import type { Peer, Message, Channel, ChannelRole, ChannelMemoryEntry, WsEvent } from "../shared/types.ts";
+import type { Peer, Message, Channel, ChannelRole, ChannelMemoryEntry, FileEntry, WsEvent } from "../shared/types.ts";
 
 // --- Helpers ---
 
@@ -725,6 +725,57 @@ function RoleEmoji({ role }: { role?: string }) {
   return <span className="role-emoji" title={role}>{icon.label}</span>;
 }
 
+function fileIcon(filename: string): string {
+  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
+  if (["png","jpg","jpeg","gif","webp","svg","ico"].includes(ext)) return "🖼️";
+  if (["zip","tar","gz","7z","rar","bz2"].includes(ext)) return "🗜️";
+  if (["md","txt","rst","log"].includes(ext)) return "📝";
+  if (["js","ts","jsx","tsx","py","rs","go","rb","java","c","cpp","h","cs"].includes(ext)) return "⚙️";
+  if (["json","yaml","yml","toml","xml","env","ini","conf"].includes(ext)) return "🔧";
+  return "📄";
+}
+
+function FileList({ files, masterToken, channel, peers }: {
+  files: FileEntry[]; masterToken: string; channel: string; peers: Peer[];
+}) {
+  const handleDelete = async (file_id: string) => {
+    await fetch("/file-delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
+      body: JSON.stringify({ file_id }),
+    });
+  };
+
+  if (files.length === 0) return <div className="empty">No files in #{channel}.</div>;
+
+  return (
+    <div className="file-list">
+      {files.map((f) => {
+        const uploader = peers.find((p) => p.id === f.peer_id);
+        const uploaderName = uploader?.name || f.peer_name || f.peer_id;
+        const sizeStr = f.size >= 1024 * 1024
+          ? `${(f.size / 1024 / 1024).toFixed(1)}MB`
+          : f.size >= 1024 ? `${(f.size / 1024).toFixed(1)}KB` : `${f.size}B`;
+        return (
+          <div key={f.id} className="file-row">
+            <span className="file-icon">{fileIcon(f.filename)}</span>
+            <div className="file-info">
+              <span className="file-name">{f.filename}</span>
+              <span className="file-meta">
+                <span style={{ color: peerColor(uploaderName) }}>{uploaderName}</span>
+                {" · "}{sizeStr}{" · "}{timeAgo(f.uploaded_at)}
+              </span>
+              <span className="file-id" title={f.id}>id: {f.id}</span>
+            </div>
+            <a className="btn-icon file-download" href={`/files/${f.id}`} download={f.filename} title="Download">↓</a>
+            <button className="btn-icon" style={{ color: "var(--red)" }} onClick={() => handleDelete(f.id)} title="Delete">✕</button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function MessageItem({ msg, peers, isNew }: { msg: Message; peers: Peer[]; isNew?: boolean }) {
   const fromPeer = peers.find((p) => p.id === msg.from_id);
   const toPeer = peers.find((p) => p.id === msg.to_id);
@@ -924,6 +975,8 @@ function Dashboard({ masterToken }: { masterToken: string }) {
   const [newMessageKeys, setNewMessageKeys] = useState<Set<string>>(new Set());
   const [selectedChannel, setSelectedChannel] = useState<string>("main");
   const [channelMemory, setChannelMemory] = useState<Record<string, ChannelMemoryEntry[]>>({});
+  const [channelFiles, setChannelFiles] = useState<Record<string, FileEntry[]>>({});
+  const [rightTab, setRightTab] = useState<"messages" | "files">("messages");
   const wsRef = useRef<WebSocket | null>(null);
   const [, setTick] = useState(0); // force re-render for timeAgo
 
@@ -1017,6 +1070,19 @@ function Dashboard({ masterToken }: { masterToken: string }) {
           return { ...prev, [ch]: [entry, ...existing] };
         });
         break;
+      case "file_uploaded":
+        setChannelFiles((prev) => {
+          const ch = event.file.channel;
+          const existing = prev[ch] ?? [];
+          return { ...prev, [ch]: [event.file, ...existing] };
+        });
+        break;
+      case "file_deleted":
+        setChannelFiles((prev) => {
+          const existing = prev[event.channel] ?? [];
+          return { ...prev, [event.channel]: existing.filter((f) => f.id !== event.file_id) };
+        });
+        break;
     }
   }, []);
 
@@ -1063,6 +1129,20 @@ function Dashboard({ masterToken }: { masterToken: string }) {
     } catch {}
   }, [masterToken]);
 
+  const loadFiles = useCallback(async (ch: string) => {
+    try {
+      const res = await fetch("/file-list", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
+        body: JSON.stringify({ channel: ch }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setChannelFiles((prev) => ({ ...prev, [ch]: data.files ?? [] }));
+      }
+    } catch {}
+  }, [masterToken]);
+
   const clearMessages = useCallback(async () => {
     try {
       await fetch("/admin/clear-messages", {
@@ -1073,6 +1153,8 @@ function Dashboard({ masterToken }: { masterToken: string }) {
       setMessages([]);
     } catch {}
   }, [masterToken]);
+
+  useEffect(() => { loadFiles(selectedChannel); }, [selectedChannel, loadFiles]);
 
   const pendingPeers = peers.filter((p) => p.status === "pending");
   const onlinePeers = peers.filter((p) => p.status === "approved");
@@ -1137,14 +1219,26 @@ function Dashboard({ masterToken }: { masterToken: string }) {
           )}
         </div>
 
-        {/* Recent messages */}
+        {/* Messages / Files tab panel */}
         <div className="section section-messages">
-          <div className="section-header">
-            Recent Messages
-            <span className="count">{messages.filter(m => !m.channel || m.channel === selectedChannel).length}</span>
-            <button className="btn-icon" onClick={clearMessages} title="Clear all messages">✕</button>
+          <div className="section-tab-bar">
+            <button className={`tab-btn${rightTab === "messages" ? " active" : ""}`} onClick={() => setRightTab("messages")}>
+              Messages
+              <span className="count">{messages.filter(m => !m.channel || m.channel === selectedChannel).length}</span>
+            </button>
+            <button className={`tab-btn${rightTab === "files" ? " active" : ""}`} onClick={() => setRightTab("files")}>
+              Files
+              <span className="count">{(channelFiles[selectedChannel] ?? []).length}</span>
+            </button>
+            {rightTab === "messages" && (
+              <button className="btn-icon" style={{ marginLeft: "auto" }} onClick={clearMessages} title="Clear all messages">✕</button>
+            )}
           </div>
-          <MessageBox messages={messages.filter(m => !m.channel || m.channel === selectedChannel)} peers={peers} newMessageKeys={newMessageKeys} />
+          {rightTab === "messages" ? (
+            <MessageBox messages={messages.filter(m => !m.channel || m.channel === selectedChannel)} peers={peers} newMessageKeys={newMessageKeys} />
+          ) : (
+            <FileList files={channelFiles[selectedChannel] ?? []} masterToken={masterToken} channel={selectedChannel} peers={peers} />
+          )}
         </div>
       </div>
     </div>

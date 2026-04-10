@@ -18036,6 +18036,99 @@ function RoleEmoji({ role }) {
     children: icon.label
   }, undefined, false, undefined, this);
 }
+function fileIcon(filename) {
+  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
+  if (["png", "jpg", "jpeg", "gif", "webp", "svg", "ico"].includes(ext))
+    return "\uD83D\uDDBC️";
+  if (["zip", "tar", "gz", "7z", "rar", "bz2"].includes(ext))
+    return "\uD83D\uDDDC️";
+  if (["md", "txt", "rst", "log"].includes(ext))
+    return "\uD83D\uDCDD";
+  if (["js", "ts", "jsx", "tsx", "py", "rs", "go", "rb", "java", "c", "cpp", "h", "cs"].includes(ext))
+    return "⚙️";
+  if (["json", "yaml", "yml", "toml", "xml", "env", "ini", "conf"].includes(ext))
+    return "\uD83D\uDD27";
+  return "\uD83D\uDCC4";
+}
+function FileList({ files, masterToken, channel, peers }) {
+  const handleDelete = async (file_id) => {
+    await fetch("/file-delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
+      body: JSON.stringify({ file_id })
+    });
+  };
+  if (files.length === 0)
+    return /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+      className: "empty",
+      children: [
+        "No files in #",
+        channel,
+        "."
+      ]
+    }, undefined, true, undefined, this);
+  return /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+    className: "file-list",
+    children: files.map((f) => {
+      const uploader = peers.find((p) => p.id === f.peer_id);
+      const uploaderName = uploader?.name || f.peer_name || f.peer_id;
+      const sizeStr = f.size >= 1024 * 1024 ? `${(f.size / 1024 / 1024).toFixed(1)}MB` : f.size >= 1024 ? `${(f.size / 1024).toFixed(1)}KB` : `${f.size}B`;
+      return /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+        className: "file-row",
+        children: [
+          /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+            className: "file-icon",
+            children: fileIcon(f.filename)
+          }, undefined, false, undefined, this),
+          /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+            className: "file-info",
+            children: [
+              /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                className: "file-name",
+                children: f.filename
+              }, undefined, false, undefined, this),
+              /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                className: "file-meta",
+                children: [
+                  /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                    style: { color: peerColor(uploaderName) },
+                    children: uploaderName
+                  }, undefined, false, undefined, this),
+                  " · ",
+                  sizeStr,
+                  " · ",
+                  timeAgo(f.uploaded_at)
+                ]
+              }, undefined, true, undefined, this),
+              /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                className: "file-id",
+                title: f.id,
+                children: [
+                  "id: ",
+                  f.id
+                ]
+              }, undefined, true, undefined, this)
+            ]
+          }, undefined, true, undefined, this),
+          /* @__PURE__ */ jsx_dev_runtime.jsxDEV("a", {
+            className: "btn-icon file-download",
+            href: `/files/${f.id}`,
+            download: f.filename,
+            title: "Download",
+            children: "↓"
+          }, undefined, false, undefined, this),
+          /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
+            className: "btn-icon",
+            style: { color: "var(--red)" },
+            onClick: () => handleDelete(f.id),
+            title: "Delete",
+            children: "✕"
+          }, undefined, false, undefined, this)
+        ]
+      }, f.id, true, undefined, this);
+    })
+  }, undefined, false, undefined, this);
+}
 function MessageItem({ msg, peers, isNew }) {
   const fromPeer = peers.find((p) => p.id === msg.from_id);
   const toPeer = peers.find((p) => p.id === msg.to_id);
@@ -18303,6 +18396,8 @@ function Dashboard({ masterToken }) {
   const [newMessageKeys, setNewMessageKeys] = import_react.useState(new Set);
   const [selectedChannel, setSelectedChannel] = import_react.useState("main");
   const [channelMemory, setChannelMemory] = import_react.useState({});
+  const [channelFiles, setChannelFiles] = import_react.useState({});
+  const [rightTab, setRightTab] = import_react.useState("messages");
   const wsRef = import_react.useRef(null);
   const [, setTick] = import_react.useState(0);
   import_react.useEffect(() => {
@@ -18386,6 +18481,19 @@ function Dashboard({ masterToken }) {
           return { ...prev, [ch]: [entry, ...existing] };
         });
         break;
+      case "file_uploaded":
+        setChannelFiles((prev) => {
+          const ch = event.file.channel;
+          const existing = prev[ch] ?? [];
+          return { ...prev, [ch]: [event.file, ...existing] };
+        });
+        break;
+      case "file_deleted":
+        setChannelFiles((prev) => {
+          const existing = prev[event.channel] ?? [];
+          return { ...prev, [event.channel]: existing.filter((f) => f.id !== event.file_id) };
+        });
+        break;
     }
   }, []);
   import_react.useEffect(() => {
@@ -18425,6 +18533,19 @@ function Dashboard({ masterToken }) {
       }
     } catch {}
   }, [masterToken]);
+  const loadFiles = import_react.useCallback(async (ch) => {
+    try {
+      const res = await fetch("/file-list", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
+        body: JSON.stringify({ channel: ch })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setChannelFiles((prev) => ({ ...prev, [ch]: data.files ?? [] }));
+      }
+    } catch {}
+  }, [masterToken]);
   const clearMessages = import_react.useCallback(async () => {
     try {
       await fetch("/admin/clear-messages", {
@@ -18435,6 +18556,9 @@ function Dashboard({ masterToken }) {
       setMessages([]);
     } catch {}
   }, [masterToken]);
+  import_react.useEffect(() => {
+    loadFiles(selectedChannel);
+  }, [selectedChannel, loadFiles]);
   const pendingPeers = peers.filter((p) => p.status === "pending");
   const onlinePeers = peers.filter((p) => p.status === "approved");
   const offlinePeers = peers.filter((p) => p.status === "offline");
@@ -18562,25 +18686,48 @@ function Dashboard({ masterToken }) {
             className: "section section-messages",
             children: [
               /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
-                className: "section-header",
+                className: "section-tab-bar",
                 children: [
-                  "Recent Messages",
-                  /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
-                    className: "count",
-                    children: messages.filter((m) => !m.channel || m.channel === selectedChannel).length
-                  }, undefined, false, undefined, this),
                   /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
+                    className: `tab-btn${rightTab === "messages" ? " active" : ""}`,
+                    onClick: () => setRightTab("messages"),
+                    children: [
+                      "Messages",
+                      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                        className: "count",
+                        children: messages.filter((m) => !m.channel || m.channel === selectedChannel).length
+                      }, undefined, false, undefined, this)
+                    ]
+                  }, undefined, true, undefined, this),
+                  /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
+                    className: `tab-btn${rightTab === "files" ? " active" : ""}`,
+                    onClick: () => setRightTab("files"),
+                    children: [
+                      "Files",
+                      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                        className: "count",
+                        children: (channelFiles[selectedChannel] ?? []).length
+                      }, undefined, false, undefined, this)
+                    ]
+                  }, undefined, true, undefined, this),
+                  rightTab === "messages" && /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
                     className: "btn-icon",
+                    style: { marginLeft: "auto" },
                     onClick: clearMessages,
                     title: "Clear all messages",
                     children: "✕"
                   }, undefined, false, undefined, this)
                 ]
               }, undefined, true, undefined, this),
-              /* @__PURE__ */ jsx_dev_runtime.jsxDEV(MessageBox, {
+              rightTab === "messages" ? /* @__PURE__ */ jsx_dev_runtime.jsxDEV(MessageBox, {
                 messages: messages.filter((m) => !m.channel || m.channel === selectedChannel),
                 peers,
                 newMessageKeys
+              }, undefined, false, undefined, this) : /* @__PURE__ */ jsx_dev_runtime.jsxDEV(FileList, {
+                files: channelFiles[selectedChannel] ?? [],
+                masterToken,
+                channel: selectedChannel,
+                peers
               }, undefined, false, undefined, this)
             ]
           }, undefined, true, undefined, this)

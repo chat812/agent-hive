@@ -50,6 +50,17 @@ export interface ChannelMemoryEntry {
   written_at: string; // ISO timestamp
 }
 
+export interface FileEntry {
+  id: string;
+  filename: string;
+  peer_id: string;
+  peer_name: string;
+  channel: string;
+  cwd: string;
+  size: number;
+  uploaded_at: string;
+}
+
 // --- Broker API types ---
 
 export interface RegisterRequest {
@@ -128,4 +139,6 @@ export type WsEvent =
   | { type: "channel_removed"; name: string }
   | { type: "channel_updated"; channel: Channel }
   | { type: "memory_updated"; channel: string; key: string; written_by: string; written_at: string; size: number; deleted?: boolean }
+  | { type: "file_uploaded"; file: FileEntry }
+  | { type: "file_deleted"; file_id: string; channel: string }
   | { type: "snapshot"; peers: Peer[]; recent_messages: Message[]; channels: Channel[] };
