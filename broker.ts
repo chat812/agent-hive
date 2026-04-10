@@ -541,11 +541,9 @@ function handleJoinChannel(body: { id: string; channel: string }): { ok: boolean
   return { ok: true, channel: name, role, memory_keys };
 }
 
-// --- Embed dashboard assets (embedded in binary with --compile) ---
+// --- Dashboard asset paths ---
 
-import dashboardHtml from "./ui/index.html" with { type: "text" };
-import dashboardJs from "./ui/app.bundle.js" with { type: "text" };
-import dashboardCss from "./ui/app.css" with { type: "text" };
+const UI_DIR = import.meta.dir + "/ui";
 
 // --- HTTP + WebSocket Server ---
 
@@ -572,13 +570,13 @@ Bun.serve({
 
     if (req.method === "GET") {
       if (path === "/" || path === "/index.html") {
-        return new Response(dashboardHtml, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+        return new Response(Bun.file(`${UI_DIR}/index.html`), { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
       if (path === "/app.bundle.js") {
-        return new Response(dashboardJs, { headers: { "Content-Type": "application/javascript; charset=utf-8" } });
+        return new Response(Bun.file(`${UI_DIR}/app.bundle.js`), { headers: { "Content-Type": "application/javascript; charset=utf-8" } });
       }
       if (path === "/app.css") {
-        return new Response(dashboardCss, { headers: { "Content-Type": "text/css; charset=utf-8" } });
+        return new Response(Bun.file(`${UI_DIR}/app.css`), { headers: { "Content-Type": "text/css; charset=utf-8" } });
       }
       if (path === "/health") {
         return Response.json({ status: "ok", peers: (selectAllPeers.all() as Peer[]).length });
@@ -648,6 +646,18 @@ Bun.serve({
         return Response.json({ error: "Master key required" }, { status: 403 });
       }
       db.run("DELETE FROM messages");
+      return Response.json({ ok: true });
+    }
+
+    // Admin peer actions — master key only
+    if (path === "/admin/kick-peer" || path === "/admin/remove-peer") {
+      if (!isMasterKey(authHeader)) {
+        return Response.json({ error: "Master key required" }, { status: 403 });
+      }
+      const body = await req.json() as { peer_id: string };
+      if (!body.peer_id) return Response.json({ error: "peer_id required" }, { status: 400 });
+      if (path === "/admin/kick-peer") return Response.json(handleLeaveChannel({ id: body.peer_id }));
+      removePeer(body.peer_id);
       return Response.json({ ok: true });
     }
 
@@ -728,7 +738,7 @@ Bun.serve({
           return Response.json(handleLeaveChannel(body as { id: string }));
         case "/join-channel":
           return Response.json(handleJoinChannel(body as { id: string; channel: string }));
-        case "/set-role": {
+case "/set-role": {
           const { id, role } = body as { id: string; role: string };
           const peer = selectPeerById.get(id) as Peer | null;
           if (!peer) return Response.json({ error: "Peer not found" }, { status: 404 });

@@ -756,6 +756,29 @@ header h1 {
   background: var(--bg-card-hover);
 }
 
+.btn-kick-peer {
+  background: none;
+  border: none;
+  color: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  margin-left: auto;
+  flex-shrink: 0;
+  line-height: 1;
+  transition: color 0.15s, background 0.15s;
+}
+
+.channel-member-row:hover .btn-kick-peer {
+  color: var(--text-dim);
+}
+
+.btn-kick-peer:hover {
+  background: var(--red) !important;
+  color: white !important;
+}
+
 .member-role-badge {
   margin-left: auto;
   font-size: 10px;
