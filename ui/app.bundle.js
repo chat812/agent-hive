@@ -17347,9 +17347,12 @@ function PeerCard({
     ]
   }, undefined, true, undefined, this);
 }
+function toAlias(displayName) {
+  return displayName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32) || "";
+}
 function ChannelPanel({ channels, masterToken, selectedChannel, onSelectChannel, channelMemory, onLoadMemory }) {
   const [creating, setCreating] = import_react.useState(false);
-  const [newName, setNewName] = import_react.useState("");
+  const [newDisplayName, setNewDisplayName] = import_react.useState("");
   const [error, setError] = import_react.useState("");
   const [expanded, setExpanded] = import_react.useState(new Set(["main"]));
   const toggleExpand = (name) => {
@@ -17362,17 +17365,21 @@ function ChannelPanel({ channels, masterToken, selectedChannel, onSelectChannel,
       return next;
     });
   };
+  const alias = toAlias(newDisplayName);
   const createChannel = async () => {
     setError("");
-    const name = newName.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");
-    if (!name) {
-      setError("Invalid name");
+    if (!newDisplayName.trim()) {
+      setError("Name is required");
+      return;
+    }
+    if (!alias) {
+      setError("Cannot derive a valid alias from that name");
       return;
     }
     const res = await fetch("/create-channel", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
-      body: JSON.stringify({ name })
+      body: JSON.stringify({ display_name: newDisplayName.trim() })
     });
     const data = await res.json();
     if (!data.ok) {
@@ -17380,8 +17387,8 @@ function ChannelPanel({ channels, masterToken, selectedChannel, onSelectChannel,
       return;
     }
     setCreating(false);
-    setNewName("");
-    setExpanded((prev) => new Set([...prev, name]));
+    setNewDisplayName("");
+    setExpanded((prev) => new Set([...prev, data.name ?? alias]));
   };
   const removeChannel = async (name) => {
     await fetch("/remove-channel", {
@@ -17406,7 +17413,7 @@ function ChannelPanel({ channels, masterToken, selectedChannel, onSelectChannel,
             onClick: () => {
               setCreating((v) => !v);
               setError("");
-              setNewName("");
+              setNewDisplayName("");
             },
             children: creating ? "✕" : "+"
           }, undefined, false, undefined, this)
@@ -17417,9 +17424,9 @@ function ChannelPanel({ channels, masterToken, selectedChannel, onSelectChannel,
         children: [
           /* @__PURE__ */ jsx_dev_runtime.jsxDEV("input", {
             autoFocus: true,
-            placeholder: "channel-name",
-            value: newName,
-            onChange: (e) => setNewName(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, "")),
+            placeholder: "Channel name (e.g. Backend Team)",
+            value: newDisplayName,
+            onChange: (e) => setNewDisplayName(e.target.value),
             onKeyDown: (e) => {
               if (e.key === "Enter")
                 createChannel();
@@ -17427,6 +17434,13 @@ function ChannelPanel({ channels, masterToken, selectedChannel, onSelectChannel,
                 setCreating(false);
             }
           }, undefined, false, undefined, this),
+          newDisplayName && /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+            className: "channel-alias-preview",
+            children: [
+              "#",
+              alias || "…"
+            ]
+          }, undefined, true, undefined, this),
           /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
             className: "btn btn-approve",
             onClick: createChannel,
@@ -17856,6 +17870,8 @@ function MemoryValuePopup({ entry, masterToken, channel, onClose, onDelete }) {
 function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterToken, memory, onLoadMemory }) {
   const [activePeer, setActivePeer] = import_react.useState(null);
   const [activeMemKey, setActiveMemKey] = import_react.useState(null);
+  const [renaming, setRenaming] = import_react.useState(false);
+  const [renameValue, setRenameValue] = import_react.useState("");
   const onlineCount = ch.peers.filter((p) => p.status !== "offline").length;
   const loaded = import_react.useRef(false);
   import_react.useEffect(() => {
@@ -17879,6 +17895,17 @@ function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterTo
       body: JSON.stringify({ channel: ch.name })
     });
   };
+  const handleRename = async () => {
+    const display_name = renameValue.trim();
+    if (!display_name)
+      return;
+    await fetch("/rename-channel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
+      body: JSON.stringify({ name: ch.name, display_name })
+    });
+    setRenaming(false);
+  };
   return /* @__PURE__ */ jsx_dev_runtime.jsxDEV(jsx_dev_runtime.Fragment, {
     children: [
       /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
@@ -17893,13 +17920,21 @@ function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterTo
                 children: isExpanded ? "▾" : "▸"
               }, undefined, false, undefined, this),
               /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
-                className: "channel-hash",
-                children: "#"
-              }, undefined, false, undefined, this),
-              /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
-                className: "channel-row-name",
-                children: ch.name
-              }, undefined, false, undefined, this),
+                className: "channel-row-label",
+                children: [
+                  /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                    className: "channel-row-name",
+                    children: ch.display_name || ch.name
+                  }, undefined, false, undefined, this),
+                  /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                    className: "channel-row-alias",
+                    children: [
+                      "#",
+                      ch.name
+                    ]
+                  }, undefined, true, undefined, this)
+                ]
+              }, undefined, true, undefined, this),
               /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
                 className: "channel-row-count",
                 children: [
@@ -17908,6 +17943,17 @@ function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterTo
                 ]
               }, undefined, true, undefined, this),
               ch.name !== "main" && /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
+                className: "btn-icon",
+                style: { fontSize: 10, opacity: 0.5 },
+                onClick: (e) => {
+                  e.stopPropagation();
+                  setRenaming((v) => !v);
+                  setRenameValue(ch.display_name || ch.name);
+                },
+                title: "Rename channel",
+                children: "✎"
+              }, undefined, false, undefined, this),
+              ch.name !== "main" && /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
                 className: "btn-remove",
                 onClick: (e) => {
                   e.stopPropagation();
@@ -17915,6 +17961,38 @@ function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterTo
                 },
                 title: "Remove channel",
                 children: "✕"
+              }, undefined, false, undefined, this)
+            ]
+          }, undefined, true, undefined, this),
+          renaming && /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+            className: "channel-rename-row",
+            onClick: (e) => e.stopPropagation(),
+            children: [
+              /* @__PURE__ */ jsx_dev_runtime.jsxDEV("input", {
+                autoFocus: true,
+                className: "channel-rename-input",
+                value: renameValue,
+                onChange: (e) => setRenameValue(e.target.value),
+                onKeyDown: (e) => {
+                  if (e.key === "Enter")
+                    handleRename();
+                  if (e.key === "Escape")
+                    setRenaming(false);
+                },
+                placeholder: "Channel name"
+              }, undefined, false, undefined, this),
+              /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                className: "channel-alias-preview",
+                children: [
+                  "#",
+                  toAlias(renameValue) || ch.name
+                ]
+              }, undefined, true, undefined, this),
+              /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
+                className: "btn btn-approve",
+                style: { padding: "2px 8px", fontSize: 11 },
+                onClick: handleRename,
+                children: "Save"
               }, undefined, false, undefined, this)
             ]
           }, undefined, true, undefined, this),
@@ -18359,7 +18437,7 @@ function Dashboard({ masterToken }) {
         break;
       }
       case "channel_created":
-        setChannels((prev) => prev.find((c) => c.name === event.name) ? prev : [...prev, { name: event.name, created_at: new Date().toISOString(), peers: [] }]);
+        setChannels((prev) => prev.find((c) => c.name === event.name) ? prev : [...prev, { name: event.name, display_name: event.display_name, created_at: new Date().toISOString(), peers: [], roles: [] }]);
         break;
       case "channel_removed":
         setChannels((prev) => prev.filter((c) => c.name !== event.name));

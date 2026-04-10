@@ -178,9 +178,17 @@ function PeerCard({
 
 // --- Channel Panel ---
 
+function toAlias(displayName: string): string {
+  return displayName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32) || "";
+}
+
 function ChannelPanel({ channels, masterToken, selectedChannel, onSelectChannel, channelMemory, onLoadMemory }: { channels: Channel[]; masterToken: string; selectedChannel: string; onSelectChannel: (name: string) => void; channelMemory: Record<string, ChannelMemoryEntry[]>; onLoadMemory: (ch: string) => void }) {
   const [creating, setCreating] = useState(false);
-  const [newName, setNewName] = useState("");
+  const [newDisplayName, setNewDisplayName] = useState("");
   const [error, setError] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set(["main"]));
 
@@ -193,20 +201,22 @@ function ChannelPanel({ channels, masterToken, selectedChannel, onSelectChannel,
     });
   };
 
+  const alias = toAlias(newDisplayName);
+
   const createChannel = async () => {
     setError("");
-    const name = newName.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");
-    if (!name) { setError("Invalid name"); return; }
+    if (!newDisplayName.trim()) { setError("Name is required"); return; }
+    if (!alias) { setError("Cannot derive a valid alias from that name"); return; }
     const res = await fetch("/create-channel", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ display_name: newDisplayName.trim() }),
     });
     const data = await res.json();
     if (!data.ok) { setError(data.error ?? "Failed"); return; }
     setCreating(false);
-    setNewName("");
-    setExpanded((prev) => new Set([...prev, name]));
+    setNewDisplayName("");
+    setExpanded((prev) => new Set([...prev, data.name ?? alias]));
   };
 
   const removeChannel = async (name: string) => {
@@ -222,7 +232,7 @@ function ChannelPanel({ channels, masterToken, selectedChannel, onSelectChannel,
       <div className="section-header">
         Channels
         <span className="count">{channels.length}</span>
-        <button className="btn-icon" onClick={() => { setCreating((v) => !v); setError(""); setNewName(""); }}>
+        <button className="btn-icon" onClick={() => { setCreating((v) => !v); setError(""); setNewDisplayName(""); }}>
           {creating ? "✕" : "+"}
         </button>
       </div>
@@ -231,11 +241,12 @@ function ChannelPanel({ channels, masterToken, selectedChannel, onSelectChannel,
         <div className="channel-create">
           <input
             autoFocus
-            placeholder="channel-name"
-            value={newName}
-            onChange={(e) => setNewName(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""))}
+            placeholder="Channel name (e.g. Backend Team)"
+            value={newDisplayName}
+            onChange={(e) => setNewDisplayName(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") createChannel(); if (e.key === "Escape") setCreating(false); }}
           />
+          {newDisplayName && <div className="channel-alias-preview">#{alias || "…"}</div>}
           <button className="btn btn-approve" onClick={createChannel}>Create</button>
           {error && <span className="channel-error">{error}</span>}
         </div>
@@ -604,6 +615,8 @@ function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterTo
 }) {
   const [activePeer, setActivePeer] = useState<Peer | null>(null);
   const [activeMemKey, setActiveMemKey] = useState<ChannelMemoryEntry | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
   const onlineCount = ch.peers.filter((p) => p.status !== "offline").length;
   const loaded = useRef(false);
 
@@ -631,21 +644,51 @@ function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterTo
     });
   };
 
+  const handleRename = async () => {
+    const display_name = renameValue.trim();
+    if (!display_name) return;
+    await fetch("/rename-channel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
+      body: JSON.stringify({ name: ch.name, display_name }),
+    });
+    setRenaming(false);
+  };
+
 
   return (
     <>
       <div className="channel-block">
         <div className={`channel-row${isSelected ? " selected" : ""}`} onClick={onToggle}>
           <span className="channel-expand-arrow">{isExpanded ? "▾" : "▸"}</span>
-          <span className="channel-hash">#</span>
-          <span className="channel-row-name">{ch.name}</span>
+          <span className="channel-row-label">
+            <span className="channel-row-name">{ch.display_name || ch.name}</span>
+            <span className="channel-row-alias">#{ch.name}</span>
+          </span>
           <span className="channel-row-count">
             {onlineCount}{ch.peers.length > onlineCount ? `/${ch.peers.length}` : ""}
           </span>
           {ch.name !== "main" && (
+            <button className="btn-icon" style={{ fontSize: 10, opacity: 0.5 }} onClick={(e) => { e.stopPropagation(); setRenaming((v) => !v); setRenameValue(ch.display_name || ch.name); }} title="Rename channel">✎</button>
+          )}
+          {ch.name !== "main" && (
             <button className="btn-remove" onClick={(e) => { e.stopPropagation(); onRemove(); }} title="Remove channel">✕</button>
           )}
         </div>
+        {renaming && (
+          <div className="channel-rename-row" onClick={(e) => e.stopPropagation()}>
+            <input
+              autoFocus
+              className="channel-rename-input"
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") handleRename(); if (e.key === "Escape") setRenaming(false); }}
+              placeholder="Channel name"
+            />
+            <span className="channel-alias-preview">#{toAlias(renameValue) || ch.name}</span>
+            <button className="btn btn-approve" style={{ padding: "2px 8px", fontSize: 11 }} onClick={handleRename}>Save</button>
+          </div>
+        )}
 
         {isExpanded && (
           <div className="channel-members">
@@ -993,7 +1036,7 @@ function Dashboard({ masterToken }: { masterToken: string }) {
         setChannels((prev) =>
           prev.find((c) => c.name === event.name)
             ? prev
-            : [...prev, { name: event.name, created_at: new Date().toISOString(), peers: [] }]
+            : [...prev, { name: event.name, display_name: event.display_name, created_at: new Date().toISOString(), peers: [], roles: [] }]
         );
         break;
       case "channel_removed":

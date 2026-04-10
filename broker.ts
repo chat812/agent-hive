@@ -57,11 +57,15 @@ db.run("PRAGMA busy_timeout = 3000");
 db.run(`
   CREATE TABLE IF NOT EXISTS channels (
     name TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
   )
 `);
+try { db.run("ALTER TABLE channels ADD COLUMN display_name TEXT NOT NULL DEFAULT ''"); } catch {}
 
-db.run(`INSERT OR IGNORE INTO channels (name, created_at) VALUES ('main', '${new Date().toISOString()}')`);
+db.run(`INSERT OR IGNORE INTO channels (name, display_name, created_at) VALUES ('main', 'Main', '${new Date().toISOString()}')`);
+// Backfill display_name for existing channels that have empty display_name
+db.run("UPDATE channels SET display_name = name WHERE display_name = ''");
 
 db.run(`
   CREATE TABLE IF NOT EXISTS peer_last_channel (
@@ -236,9 +240,10 @@ const insertPeer = db.prepare(`
   INSERT INTO peers (id, name, channel, pid, cwd, git_root, tty, harness, hostname, summary, status, registered_at, last_seen)
   VALUES (?, ?, 'main', ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
 `);
-const selectAllChannels = db.prepare("SELECT * FROM channels ORDER BY name ASC");
+const selectAllChannels = db.prepare("SELECT name, display_name, created_at FROM channels ORDER BY name ASC");
 const selectChannelByName = db.prepare("SELECT name FROM channels WHERE name = ?");
-const insertChannel = db.prepare("INSERT OR IGNORE INTO channels (name, created_at) VALUES (?, ?)");
+const insertChannel = db.prepare("INSERT OR IGNORE INTO channels (name, display_name, created_at) VALUES (?, ?, ?)");
+const updateChannelDisplayName = db.prepare("UPDATE channels SET display_name = ? WHERE name = ?");
 const deleteChannel = db.prepare("DELETE FROM channels WHERE name != 'main' AND name = ?");
 const updatePeerChannel = db.prepare("UPDATE peers SET channel = ? WHERE id = ?");
 const updatePeerRole = db.prepare("UPDATE peers SET role = ? WHERE id = ?");
@@ -496,9 +501,10 @@ function sanitizeChannelName(raw: string): string {
 }
 
 function getChannelsWithPeers(): Channel[] {
-  const channels = selectAllChannels.all() as { name: string; created_at: string }[];
+  const channels = selectAllChannels.all() as { name: string; display_name: string; created_at: string }[];
   return channels.map((ch) => ({
     name: ch.name,
+    display_name: ch.display_name || ch.name,
     created_at: ch.created_at,
     peers: selectPeersByChannel.all(ch.name) as Peer[],
     roles: selectRolesByChannel.all(ch.name) as { name: string; description: string }[],
@@ -509,12 +515,24 @@ function handleListChannels(): Channel[] {
   return getChannelsWithPeers();
 }
 
-function handleCreateChannel(body: { name: string }): { ok: boolean; error?: string } {
-  const name = sanitizeChannelName(body.name ?? "");
-  if (!name || name === "") return { ok: false, error: "Invalid channel name" };
-  insertChannel.run(name, new Date().toISOString());
-  broadcast({ type: "channel_created", name });
-  return { ok: true };
+function toChannelAlias(displayName: string): string {
+  return displayName
+    .toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // strip accents
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32) || "channel";
+}
+
+function handleCreateChannel(body: { name?: string; display_name?: string }): { ok: boolean; name?: string; error?: string } {
+  const displayName = (body.display_name ?? body.name ?? "").trim();
+  if (!displayName) return { ok: false, error: "Display name is required" };
+  const alias = toChannelAlias(displayName);
+  if (!alias) return { ok: false, error: "Could not derive a valid alias from the name" };
+  if (selectChannelByName.get(alias)) return { ok: false, error: `Channel #${alias} already exists` };
+  insertChannel.run(alias, displayName, new Date().toISOString());
+  broadcast({ type: "channel_created", name: alias, display_name: displayName });
+  return { ok: true, name: alias };
 }
 
 function handleRemoveChannel(body: { name: string }): { ok: boolean; error?: string } {
@@ -691,13 +709,21 @@ Bun.serve({
       return Response.json({ ok: true });
     }
 
-    // Channel management — master key only for create/remove
-    if (path === "/create-channel" || path === "/remove-channel") {
+    // Channel management — master key only for create/remove/rename
+    if (path === "/create-channel" || path === "/remove-channel" || path === "/rename-channel") {
       if (!isMasterKey(authHeader)) {
         return Response.json({ error: "Master key required" }, { status: 403 });
       }
       const body = await req.json();
-      if (path === "/create-channel") return Response.json(handleCreateChannel(body as { name: string }));
+      if (path === "/create-channel") return Response.json(handleCreateChannel(body as { name?: string; display_name?: string }));
+      if (path === "/rename-channel") {
+        const { name, display_name } = body as { name: string; display_name: string };
+        if (!name || !display_name?.trim()) return Response.json({ error: "name and display_name required" }, { status: 400 });
+        updateChannelDisplayName.run(display_name.trim(), name);
+        const ch = getChannelsWithPeers().find((c) => c.name === name);
+        if (ch) broadcast({ type: "channel_updated", channel: ch });
+        return Response.json({ ok: true });
+      }
       return Response.json(handleRemoveChannel(body as { name: string }));
     }
 
