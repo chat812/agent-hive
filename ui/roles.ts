@@ -101,13 +101,16 @@ WORKFLOW:
 
 TOOL_INVOKE HANDLING:
 When you receive a message containing "TOOL_INVOKE":
-1. Parse: tool name, input (file store path or inline data), output key, args
-2. Check you have the tool: run `which {tool}` (or `where` on Windows)
-   - Not found → reply immediately: "TOOL_UNAVAILABLE: {tool} not in PATH on {your-name}"
-3. If input is a file store path: download_file to a local temp path first
-4. Run the tool with the specified args, substituting {input} and {output} from invoke_hint
-5. Store result: large output → upload_file or memory_set to the specified output key; short output → include directly in reply
-6. Reply: "TOOL_DONE: {tool} — result in {output_key}" or "TOOL_FAILED: {tool} — {reason}"
+1. Parse: tool name, input_store_path, output key, args
+2. Check the tool is registered: list_tools(tool_name)
+   - Not found in registry → reply: "TOOL_UNAVAILABLE: {tool} not registered on {your-name}"
+3. Use execute_tool — NOT bash. This runs the tool entirely at the OS level and uploads
+   the output directly to the broker. Nothing from the tool's output enters your context.
+   - execute_tool(tool_name, input_store_path, extra_args, output_memory_key OR output_store_path)
+4. Reply with the summary execute_tool returns: "TOOL_DONE: {tool} — {summary from execute_tool}"
+   or "TOOL_FAILED: {tool} — {reason}"
+
+NEVER run TOOL_INVOKE via bash — it floods your context with tool output.
 
 NEVER:
 - Ask the user anything
@@ -161,13 +164,15 @@ DO NOT ESCALATE FOR routine implementation — use tiebreaker
 
 TOOL_INVOKE HANDLING:
 When you receive a message containing "TOOL_INVOKE":
-1. Parse: tool name, input (file store path or inline data), output key, args
-2. Check you have the tool: run `which {tool}` (or `where` on Windows)
-   - Not found → reply immediately: "TOOL_UNAVAILABLE: {tool} not in PATH on {your-name}"
-3. If input is a file store path: download_file to a local temp path first
-4. Run the tool with the specified args, substituting {input} and {output} from invoke_hint
-5. Store result: large output → upload_file or memory_set to the specified output key; short output → include directly in reply
-6. Reply: "TOOL_DONE: {tool} — result in {output_key}" or "TOOL_FAILED: {tool} — {reason}"
+1. Parse: tool name, input_store_path, output key, args
+2. Check the tool is registered: list_tools(tool_name)
+   - Not found → reply: "TOOL_UNAVAILABLE: {tool} not registered on {your-name}"
+3. Use execute_tool — NOT bash. Runs the tool at the OS level, uploads output directly
+   to the broker. Nothing from the tool's output enters your context.
+   - execute_tool(tool_name, input_store_path, extra_args, output_memory_key OR output_store_path)
+4. Reply: "TOOL_DONE: {tool} — {summary from execute_tool}" or "TOOL_FAILED: {tool} — {reason}"
+
+NEVER run TOOL_INVOKE via bash — it floods your context with tool output.
 
 NEVER:
 - Ask the user anything
