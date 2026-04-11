@@ -42,7 +42,7 @@ const PORT = parseInt(process.env.AGENT_HIVE_PORT ?? "7899", 10);
 const DB_PATH =
   process.env.AGENT_HIVE_DB ??
   `${process.env.HOME ?? process.env.USERPROFILE}/.agent-hive.db`;
-const STALE_THRESHOLD_MS = 60_000; // 60s — mark offline after 4 missed heartbeats
+const STALE_THRESHOLD_MS = 10_000; // 10s — mark offline after 5 missed heartbeats (2s interval)
 const REMOVE_THRESHOLD_MS = 300_000; // 5 min — actually delete offline peers
 
 const FILES_DIR = process.env.AGENT_HIVE_FILES_DIR ??
@@ -440,11 +440,19 @@ function handleAuthStatus(token: string): AuthStatusResponse | { error: string }
 }
 
 function handleHeartbeat(body: HeartbeatRequest): { role: string; abort: boolean } {
-  updateLastSeen.run(new Date().toISOString(), body.id);
+  const now = new Date().toISOString();
+  updateLastSeen.run(now, body.id);
   if (body.tokens_in !== undefined || body.tokens_out !== undefined) {
     updateTokens.run(body.tokens_in ?? 0, body.tokens_out ?? 0, body.id);
   }
+  // Revive offline peers that are still sending heartbeats (e.g. after broker restart)
   const peer = selectPeerById.get(body.id) as Peer | null;
+  if (peer && peer.status === "offline") {
+    db.run("UPDATE peers SET status = 'approved' WHERE id = ?", [body.id]);
+    const revived = selectPeerById.get(body.id) as Peer;
+    broadcast({ type: "peer_updated", peer: revived });
+    return { role: revived.role ?? "", abort: abortedChannels.has(revived.channel ?? "") };
+  }
   if (peer) broadcast({ type: "peer_updated", peer });
   return { role: peer?.role ?? "", abort: abortedChannels.has(peer?.channel ?? "") };
 }
@@ -695,6 +703,16 @@ function handleJoinChannel(body: { id: string; channel: string }): { ok: boolean
 // --- Dashboard asset paths ---
 
 const UI_DIR = import.meta.dir + "/ui";
+
+// --- Build UI bundle ---
+console.log("Building UI...");
+await Bun.build({
+  entrypoints: [`${UI_DIR}/app.tsx`],
+  outdir: UI_DIR,
+  naming: "app.bundle.js",
+  target: "browser",
+});
+console.log("UI ready.");
 
 // --- HTTP + WebSocket Server ---
 

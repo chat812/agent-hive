@@ -42,7 +42,7 @@ const BROKER_URL =
   `http://127.0.0.1:${process.env.AGENT_HIVE_PORT ?? "7899"}`;
 const HARNESS = process.env.AGENT_HIVE_HARNESS ?? "claude-code";
 const POLL_INTERVAL_MS = 1000;
-const HEARTBEAT_INTERVAL_MS = 15_000;
+const HEARTBEAT_INTERVAL_MS = 2_000;
 const AUTH_POLL_INTERVAL_MS = 2000;
 // When running compiled, look for broker binary next to this executable.
 // When running via bun, use the .ts source.
@@ -50,6 +50,20 @@ const IS_COMPILED = !import.meta.path.endsWith(".ts");
 const BROKER_CMD: string[] = IS_COMPILED
   ? [new URL("./agent-hive-broker", `file://${process.execPath}`).pathname.replace(/^\/([A-Z]:)/, "$1")]
   : ["bun", new URL("./broker.ts", import.meta.url).pathname];
+
+// --- Role label extraction ---
+
+function roleLabel(role: string): string {
+  if (role.includes("Master coordinator")) return "Master";
+  if (role.includes("Vulnerability Researcher")) return "Vuln Researcher";
+  if (role.includes("Vulnerability Validator")) return "Vuln Validator";
+  if (role.includes("System Admin")) return "Sys Admin";
+  if (role.includes("Worker agent")) return "Worker";
+  if (role.includes("Executor agent")) return "Executor";
+  if (role.includes("Advisor")) return "Advisor";
+  if (!role) return "(none)";
+  return role.split("\n")[0].slice(0, 80);
+}
 
 // --- State ---
 
@@ -507,7 +521,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           ];
           if (p.git_root) parts.push(`Repo: ${p.git_root}`);
           if (p.tty) parts.push(`TTY: ${p.tty}`);
-          if (p.role) parts.push(`Role: ${p.role}`);
+          if (p.role) parts.push(`Role: ${roleLabel(p.role)}`);
           if (p.summary) parts.push(`Summary: ${p.summary}`);
           parts.push(`Last seen: ${p.last_seen}`);
           return parts.join("\n  ");

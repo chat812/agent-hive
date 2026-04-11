@@ -98,12 +98,16 @@ function Login({ onLogin }: { onLogin: (token: string) => void }) {
 function PeerCard({
   peer,
   masterToken,
+  channels,
 }: {
   peer: Peer;
   masterToken: string;
+  channels?: Channel[];
 }) {
   const isPending = peer.status === "pending";
   const isOffline = peer.status === "offline";
+  const [showRolePopup, setShowRolePopup] = useState(false);
+  const roleIcon = getRoleIcon(peer.role ?? "");
 
   const approve = async () => {
     await fetch("/auth/approve", {
@@ -128,6 +132,8 @@ function PeerCard({
   };
 
   return (
+    <>
+    {showRolePopup && <RolePopup peer={peer} masterToken={masterToken} channels={channels} onClose={() => setShowRolePopup(false)} />}
     <div className={`peer-card ${isPending ? "pending" : ""} ${isOffline ? "offline" : ""}`}>
       <div className="peer-card-header">
         <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
@@ -176,6 +182,17 @@ function PeerCard({
         </div>
       )}
 
+      <div className="peer-role-row">
+        {roleIcon ? (
+          <span className="peer-role-badge" style={{ background: roleIcon.color }} title={peer.role}>
+            {roleIcon.label} {PRESET_ROLES.find(r => r.prompt === peer.role)?.label ?? peer.role?.split(/\s+/)[0] ?? ""}
+          </span>
+        ) : (
+          <span className="peer-role-empty">no role</span>
+        )}
+        <button className="btn-set-role" onClick={() => setShowRolePopup(true)}>Set role</button>
+      </div>
+
       {isPending && (
         <div className="approval-actions">
           <button className="btn btn-approve" onClick={approve}>
@@ -187,6 +204,7 @@ function PeerCard({
         </div>
       )}
     </div>
+    </>
   );
 }
 
@@ -265,6 +283,7 @@ function ChannelPanel({ channels, masterToken, selectedChannel, onSelectChannel 
             onToggle={() => { toggleExpand(ch.name); onSelectChannel(ch.name); }}
             onRemove={() => removeChannel(ch.name)}
             masterToken={masterToken}
+            channels={channels}
           />
         ))}
       </div>
@@ -275,10 +294,13 @@ function ChannelPanel({ channels, masterToken, selectedChannel, onSelectChannel 
 // PRESET_ROLES imported from ./roles.ts
 
 const ROLE_ICONS_MAP: Record<string, { icon: string; color: string }> = {
-  Master:   { icon: "👑", color: "#c8922a" },
-  Worker:   { icon: "🔨", color: "#5b8ce6" },
-  Executor: { icon: "⚡", color: "#9b6fe6" },
-  Advisor:  { icon: "🎓", color: "#7dc96b" },
+  Master:          { icon: "👑", color: "#c8922a" },
+  Worker:          { icon: "🔨", color: "#5b8ce6" },
+  Executor:        { icon: "⚡", color: "#9b6fe6" },
+  Advisor:         { icon: "🎓", color: "#7dc96b" },
+  "Vuln Researcher": { icon: "🔍", color: "#e05c5c" },
+  "Vuln Validator":  { icon: "🛡️", color: "#d4820a" },
+  "Sys Admin":       { icon: "🖥️", color: "#4aab8a" },
 };
 
 function getRoleIcon(role: string): { label: string; color: string } | null {
@@ -293,11 +315,12 @@ function getRoleIcon(role: string): { label: string; color: string } | null {
   return null;
 }
 
-function RolePopup({ peer, masterToken, onClose }: {
-  peer: Peer; masterToken: string; onClose: () => void;
+function RolePopup({ peer, masterToken, onClose, channels }: {
+  peer: Peer; masterToken: string; onClose: () => void; channels?: Channel[];
 }) {
   const [prompt, setPrompt] = useState(peer.role ?? "");
   const [saving, setSaving] = useState(false);
+  const [movingChannel, setMovingChannel] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -336,16 +359,45 @@ function RolePopup({ peer, masterToken, onClose }: {
     onClose();
   };
 
+  const moveToChannel = async (channelName: string) => {
+    if (channelName === peer.channel) return;
+    setMovingChannel(true);
+    await fetch("/join-channel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
+      body: JSON.stringify({ id: peer.id, channel: channelName }),
+    });
+    setMovingChannel(false);
+    onClose();
+  };
+
   const activePreset = PRESET_ROLES.find((r) => r.prompt === prompt)?.label ?? null;
+  const otherChannels = (channels ?? []).filter((c) => c.name !== peer.channel);
 
   return (
     <div className="role-popup-overlay" onClick={onClose}>
       <div className="role-popup" onClick={(e) => e.stopPropagation()}>
         <div className="role-popup-header">
           <div className="role-popup-name">{peer.name || peer.id}</div>
-          <div className="role-popup-meta">{peer.harness} · {peer.hostname}</div>
+          <div className="role-popup-meta">{peer.harness} · {peer.hostname} · #{peer.channel}</div>
           {peer.summary && <div className="role-popup-summary">{peer.summary}</div>}
         </div>
+
+        {otherChannels.length > 0 && (
+          <div className="channel-move-row">
+            <span className="channel-move-label">Move to:</span>
+            {otherChannels.map((c) => (
+              <button
+                key={c.name}
+                className="btn-channel-move"
+                onClick={() => moveToChannel(c.name)}
+                disabled={movingChannel}
+              >
+                #{c.name}
+              </button>
+            ))}
+          </div>
+        )}
 
         <div className="role-preset-row">
           {PRESET_ROLES.map((r) => (
@@ -451,9 +503,9 @@ function MemoryValuePopup({ entry, masterToken, channel, onClose, onDelete }: {
   );
 }
 
-function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterToken }: {
+function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterToken, channels }: {
   ch: Channel; isExpanded: boolean; isSelected: boolean;
-  onToggle: () => void; onRemove: () => void; masterToken: string;
+  onToggle: () => void; onRemove: () => void; masterToken: string; channels: Channel[];
 }) {
   const [activePeer, setActivePeer] = useState<Peer | null>(null);
   const onlineCount = ch.peers.filter((p) => p.status !== "offline").length;
@@ -500,6 +552,7 @@ function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterTo
         <RolePopup
           peer={activePeer}
           masterToken={masterToken}
+          channels={channels}
           onClose={() => setActivePeer(null)}
         />
       )}
@@ -1103,7 +1156,7 @@ function Dashboard({ masterToken }: { masterToken: string }) {
             </div>
             <div className="peer-grid">
               {pendingPeers.map((p) => (
-                <PeerCard key={p.id} peer={p} masterToken={masterToken} />
+                <PeerCard key={p.id} peer={p} masterToken={masterToken} channels={channels} />
               ))}
             </div>
           </div>
