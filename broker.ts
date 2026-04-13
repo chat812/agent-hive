@@ -210,7 +210,7 @@ try { db.run("ALTER TABLE peers ADD COLUMN tokens_in INTEGER NOT NULL DEFAULT 0"
 try { db.run("ALTER TABLE peers ADD COLUMN tokens_out INTEGER NOT NULL DEFAULT 0"); } catch {}
 db.run("UPDATE files SET path = filename WHERE path = ''");
 
-// --- WebSocket clients (dashboard) ---
+// --- WebSocket clients ---
 
 const wsClients = new Set<any>();
 const abortedChannels = new Set<string>();
@@ -223,23 +223,6 @@ function broadcast(event: WsEvent) {
     } catch {
       wsClients.delete(ws);
     }
-  }
-}
-
-// --- SSE agent connections ---
-
-const sseAgents = new Map<string, ReadableStreamDefaultController<Uint8Array>>();
-const sseEncoder = new TextEncoder();
-
-function pushToAgent(peerId: string, event: object): boolean {
-  const ctrl = sseAgents.get(peerId);
-  if (!ctrl) return false;
-  try {
-    ctrl.enqueue(sseEncoder.encode(`data: ${JSON.stringify(event)}\n\n`));
-    return true;
-  } catch {
-    sseAgents.delete(peerId);
-    return false;
   }
 }
 
@@ -276,17 +259,6 @@ function removePeer(id: string) {
 
 cleanStalePeers();
 setInterval(cleanStalePeers, 30_000);
-
-// SSE keepalive — prevents proxy/tunnel timeout on idle connections
-setInterval(() => {
-  for (const [peerId, ctrl] of sseAgents) {
-    try {
-      ctrl.enqueue(sseEncoder.encode(": keepalive\n\n"));
-    } catch {
-      sseAgents.delete(peerId);
-    }
-  }
-}, 15_000);
 
 // --- Prepared statements ---
 
@@ -446,7 +418,6 @@ function handleApprove(body: ApproveRejectRequest): { ok: boolean; role: string;
   if (rejoinChannel !== "main") updatePeerChannel.run(rejoinChannel, body.peer_id);
 
   const { role, memory_keys } = pushChannelRole(body.peer_id, rejoinChannel);
-  if (role) pushToAgent(body.peer_id, { type: "role_changed", role, channel: rejoinChannel });
   const updated = selectPeerById.get(body.peer_id) as Peer;
   broadcast({ type: "peer_joined", peer: updated });
   return { ok: true, role, memory_keys };
@@ -536,20 +507,7 @@ function handleSendMessage(body: SendMessageRequest): { ok: boolean; error?: str
   const sender = selectPeerById.get(body.from_id) as Peer | null;
   const channel = sender?.channel ?? "main";
   const now = new Date().toISOString();
-  const insertResult = insertMessage.run(body.from_id, body.to_id, body.text, now, channel);
-
-  // Push via SSE if target is connected — mark delivered so HTTP poll skips it
-  const pushed = pushToAgent(body.to_id, {
-    type: "message",
-    from_id: body.from_id,
-    from_name: sender?.name ?? "",
-    from_summary: sender?.summary ?? "",
-    from_cwd: sender?.cwd ?? "",
-    from_harness: sender?.harness ?? "",
-    text: body.text,
-    sent_at: now,
-  });
-  if (pushed) markDelivered.run(Number(insertResult.lastInsertRowid));
+  insertMessage.run(body.from_id, body.to_id, body.text, now, channel);
 
   const msg: Message = {
     id: 0, // not critical for broadcast
@@ -822,32 +780,6 @@ Bun.serve({
           headers: { "Content-Disposition": `attachment; filename="${meta.filename}"` },
         });
       }
-      if (path === "/events/agent") {
-        const token = url.searchParams.get("token");
-        if (!token) return new Response("Unauthorized", { status: 401 });
-        const row = selectToken.get(token) as { peer_id: string } | null;
-        if (!row) return new Response("Unauthorized", { status: 401 });
-        const peer = selectPeerById.get(row.peer_id) as Peer | null;
-        if (!peer || peer.status !== "approved") return new Response("Unauthorized", { status: 401 });
-        const peerId = peer.id;
-        const stream = new ReadableStream<Uint8Array>({
-          start(controller) {
-            sseAgents.set(peerId, controller);
-            controller.enqueue(sseEncoder.encode(`data: ${JSON.stringify({ type: "connected" })}\n\n`));
-          },
-          cancel() {
-            sseAgents.delete(peerId);
-          },
-        });
-        return new Response(stream, {
-          headers: {
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-          },
-        });
-      }
       return new Response("Not found", { status: 404 });
     }
 
@@ -975,7 +907,6 @@ Bun.serve({
         if (!peer) return Response.json({ error: "Peer not found" }, { status: 404 });
         upsertPeerChannelRole.run(peer.name, peer.channel, role ?? "");
         updatePeerRole.run(role ?? "", peer_id);
-        if (role) pushToAgent(peer_id, { type: "role_changed", role, channel: peer.channel });
         const updated = selectPeerById.get(peer_id) as Peer;
         broadcast({ type: "peer_updated", peer: updated });
         return Response.json({ ok: true });
@@ -1091,16 +1022,12 @@ case "/set-role": {
           const { channel } = body as { channel: string };
           abortedChannels.add(channel ?? "main");
           broadcast({ type: "channel_aborted", name: channel ?? "main" });
-          for (const p of selectPeersByChannel.all(channel ?? "main") as Peer[])
-            pushToAgent(p.id, { type: "abort" });
           return Response.json({ ok: true });
         }
         case "/channel-resume": {
           const { channel } = body as { channel: string };
           abortedChannels.delete(channel ?? "main");
           broadcast({ type: "channel_resumed", name: channel ?? "main" });
-          for (const p of selectPeersByChannel.all(channel ?? "main") as Peer[])
-            pushToAgent(p.id, { type: "abort_cleared" });
           return Response.json({ ok: true });
         }
         case "/channel-reset": {
