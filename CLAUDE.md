@@ -6,23 +6,44 @@ alwaysApply: false
 
 # Agent Hive
 
-Peer discovery and messaging network for AI coding instances (Claude Code, Codex, OpenCode, etc.).
+Multi-agent coordination network for AI coding instances (Claude Code, Codex, OpenCode, etc.).
 
 ## Architecture
 
-- `broker.ts` — Public HTTP + WebSocket server on 0.0.0.0:7899 + SQLite. Serves the web dashboard. Approval-based auth.
-- `server.ts` — TypeScript MCP stdio server, one per AI coding instance. Connects to broker, exposes tools, pushes channel notifications.
-- `../coworker/src/main.rs` — Rust MCP stdio server. Functionally identical to server.ts but compiles to a ~3 MB self-contained binary. This is the primary server used in `.mcp.json`.
-- `shared/types.ts` — Shared TypeScript types for broker API and WebSocket events.
+- `broker.ts` — HTTP + WebSocket server on 0.0.0.0:7899 + SQLite. Serves the web dashboard. Approval-based auth. Auto-builds UI bundle on startup.
+- `server.ts` — TypeScript MCP stdio server, one per AI coding instance. Connects to broker via WebSocket (HTTP fallback), exposes tools, pushes channel notifications.
+- `../coworker/src/main.rs` — Rust MCP stdio server. Functionally identical to server.ts but compiles to a ~3 MB binary. Primary server for `.mcp.json`. Includes idle/stall detection and `report_issue` tool.
+- `shared/types.ts` — Shared TypeScript types for broker API, dashboard WebSocket events, and agent WebSocket events.
 - `shared/auth.ts` — Token generation, master key management.
 - `shared/summarize.ts` — Auto-summary generation via OpenAI.
-- `ui/` — React web dashboard (approval management, peer visualization, message log).
+- `ui/roles.ts` — Role prompt definitions (Master, Worker, Executor, Vuln Researcher, Vuln Validator, Sys Admin, Advisor).
+- `ui/app.tsx` — React web dashboard (role assignment, channel management, peer cards, message log with pagination, memory browser).
+- `ui/app.css` — Dashboard styles.
 - `cli.ts` — CLI utility for inspecting broker state and managing auth.
+
+## Transport
+
+Agents connect to the broker using a hybrid model:
+- **WebSocket** (`/ws/agent?token=...`) — primary transport for instant push (messages, role changes, abort signals). Heartbeat ping every 5s.
+- **HTTP** — fallback polling every 1s + heartbeat every 2s when WS is down. All tool calls (send_message, list_peers, memory_set, etc.) always use HTTP.
+- Auto-reconnect with exponential backoff (1s → 30s cap).
+
+## Roles
+
+7 preset roles in `ui/roles.ts` with structured coordination prompts:
+- **Master** — coordinator, plans and assigns, never executes. Tool-restricted to Agent Hive tools only. Progress enforcement via status key monitoring.
+- **Worker / Executor** — general implementers. ACK task receipt. Advisor review gate before reporting to Master.
+- **Vuln Researcher** — security auditor. Waits for Master assignment. 5-phase workflow (recon → lab → decompile → taint trace → report). Validation gate: all findings go through Validator.
+- **Vuln Validator** — adversarial verifier. Severity-tiered deep review. ACK → INFO REQUEST → CHALLENGE → DEFENSE → VERDICT protocol.
+- **Sys Admin** — infrastructure. ACKs all requests. Lab provisioning for Researchers, LAB RUN execution for Validators.
+- **Advisor** — strategic oracle. ACKs requests. APPROVED/FEEDBACK on results.
+
+Key protocols: ACK on every request, channel isolation via `list_peers(scope: "channel")`, headless mode (agents use `send_message`/`report_issue` instead of terminal output), idle detection (30s nudge, 60s Master alert).
 
 ## Running
 
 ```bash
-# Start the broker (generates master key on first run):
+# Start the broker (generates master key on first run, auto-builds UI):
 bun broker.ts
 
 # Start Claude Code with the channel flag:
@@ -52,10 +73,10 @@ Each peer gets a generated name (e.g. `crimson-falcon`) stored in `.agent-hive/n
 
 1. Broker generates a master key on first start → `~/.agent-hive.key`
 2. New peer calls `/register` → gets a session token in **pending** state
-3. Admin opens the web dashboard, logs in with master key
-4. Dashboard shows pending peers with Approve/Reject buttons
-5. Once approved, the peer can use all API endpoints
-6. Local peers with access to `~/.agent-hive.key` are auto-approved
+3. Local peers with access to `~/.agent-hive.key` are auto-approved
+4. Remote peers → appear in dashboard as pending; admin approves/rejects
+5. Once approved, peer connects via WebSocket for push delivery
+6. All API endpoints require valid session token
 
 ## Environment Variables
 
