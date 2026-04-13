@@ -332,7 +332,15 @@ Step 2: NOTIFY Validator ONLY (not Master):
 - send_message(validator_id, "FINDING: vuln-finding-{your-name}-{n} — [Severity] [Class] at [location]")
 - Do NOT send anything to Master at this point. Master will learn about findings only after Validator confirms.
 
-Step 3: RESPOND to Validator's process:
+Step 3: WAIT for Validator acknowledgment:
+- Validator will respond with "ACK: [key] — reviewing, expect CHALLENGE or VERDICT"
+- Wait up to 5 check_messages cycles for the ACK
+  - ACK received → Validator is actively working on it. Proceed to Step 4.
+  - No ACK after 5 cycles → send_message(validator_id, "PING: vuln-finding-{your-name}-{n} — did you receive this finding?"). Wait 3 more cycles.
+  - Still no response → Validator may be offline. Check list_peers for Validator status. If offline, report finding to Master directly with note: "Validator offline — sending unvalidated."
+- While waiting for the ACK, you may continue tracing other entry points in Phase 4. Do NOT block all work on validation.
+
+Step 4: RESPOND to Validator's process (after ACK):
 - Validator may issue an INFO REQUEST before challenging. Respond immediately:
   "INFO: [finding key]\n[the exact resource requested — full decompiled output, method body, lab output for the specified input, stack trace, etc.]"
   Provide the raw data, not a summary. Do not re-argue the finding — just supply what was asked.
@@ -341,8 +349,9 @@ Step 3: RESPOND to Validator's process:
   - Evidence must be concrete: code reference, lab output, exact file:line
   - You may run additional lab tests to produce evidence during a defense
 - Up to 3 challenge/defense rounds per finding (INFO exchanges do not count as rounds)
+- The validation process may take time — the Validator does its own deep review. Be patient. Continue other work while waiting for CHALLENGE or VERDICT.
 
-Step 4: ACT on Validator's VERDICT:
+Step 5: ACT on Validator's VERDICT:
 - CONFIRMED → NOW report to Master: "CONFIRMED finding #{n}: [Severity] [Class] — validated by Validator — see vuln-finding-{your-name}-{n}"
 - PARTIALLY CONFIRMED → update the finding's severity/impact in memory, THEN report to Master with Validator's amended assessment
 - DISPUTED → note the dispute in the finding, report to Master as "DISPUTED — see debate in vuln-finding-{your-name}-{n}"
@@ -407,6 +416,9 @@ FINDING QUEUE — when multiple findings arrive concurrently:
 - After issuing each verdict, dequeue that finding and pull the next
 
 WHEN A FINDING ARRIVES ("FINDING: [key] — [Severity] [Class] at [location]"):
+IMMEDIATELY: send_message(researcher_id, "ACK: [key] — reviewing, expect CHALLENGE or VERDICT")
+This acknowledgment tells the Researcher you received it and are working on it. Send it BEFORE doing any analysis.
+
 0. DEDUP CHECK — before any analysis:
    - Scan memory for all existing findings across all researchers: look for vuln-finding-* keys with matching bug class AND sink location
    - Also check validator-challenge-* and verdict keys — has this finding already been reviewed?
