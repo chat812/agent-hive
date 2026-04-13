@@ -73,6 +73,7 @@ let myCwd = process.cwd();
 let myGitRoot: string | null = null;
 let myChannel = "main";
 let myRole = "";
+let sseConnected = false;
 
 // --- Broker communication ---
 
@@ -852,9 +853,119 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
 });
 
+// --- SSE agent connection (push delivery, proxy-friendly) ---
+
+async function dispatchSseEvent(event: Record<string, unknown>) {
+  switch (event.type) {
+    case "message": {
+      const fromId = event.from_id as string;
+      const text = event.text as string;
+      if (!fromId || fromId === "system") break;
+      await mcp.notification({
+        method: "notifications/claude/channel",
+        params: {
+          content: text,
+          meta: {
+            from_id: fromId,
+            from_summary: (event.from_summary as string) ?? "",
+            from_cwd: (event.from_cwd as string) ?? "",
+            from_harness: (event.from_harness as string) ?? "",
+            sent_at: (event.sent_at as string) ?? new Date().toISOString(),
+          },
+        },
+      });
+      log(`SSE msg from ${fromId}: ${text.slice(0, 80)}`);
+      break;
+    }
+    case "role_changed": {
+      const role = (event.role as string) ?? "";
+      const channel = (event.channel as string) ?? myChannel;
+      if (role !== myRole) {
+        myRole = role;
+        if (channel) myChannel = channel;
+        if (role) {
+          await mcp.notification({
+            method: "notifications/claude/channel",
+            params: {
+              content: `[Your role in #${channel}]\n${role}`,
+              meta: { from_id: "agent-hive", from_summary: "role assignment", from_cwd: "", from_harness: "agent-hive", sent_at: new Date().toISOString() },
+            },
+          });
+          log(`Role updated via SSE: ${role.slice(0, 80)}`);
+        }
+      }
+      break;
+    }
+    case "abort":
+      await mcp.notification({
+        method: "notifications/claude/channel",
+        params: {
+          content: "⛔ ABORT — Master has ordered all work to stop.",
+          meta: { from_id: "agent-hive", from_summary: "abort", from_cwd: "", from_harness: "agent-hive", sent_at: new Date().toISOString() },
+        },
+      });
+      break;
+    case "abort_cleared":
+      await mcp.notification({
+        method: "notifications/claude/channel",
+        params: {
+          content: "✅ Abort cleared — you may resume.",
+          meta: { from_id: "agent-hive", from_summary: "abort cleared", from_cwd: "", from_harness: "agent-hive", sent_at: new Date().toISOString() },
+        },
+      });
+      break;
+  }
+}
+
+async function connectAgentSse(): Promise<void> {
+  let reconnectDelay = 1_000;
+  while (true) {
+    if (!myToken) {
+      await new Promise((r) => setTimeout(r, 1_000));
+      continue;
+    }
+    try {
+      const url = `${BROKER_URL}/events/agent?token=${encodeURIComponent(myToken)}`;
+      const res = await fetch(url);
+      if (!res.ok || !res.body) throw new Error(`SSE connect failed: ${res.status}`);
+      sseConnected = true;
+      reconnectDelay = 1_000;
+      log("SSE connected");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let pos: number;
+          while ((pos = buffer.indexOf("\n\n")) !== -1) {
+            const block = buffer.slice(0, pos);
+            buffer = buffer.slice(pos + 2);
+            for (const line of block.split("\n")) {
+              if (line.startsWith("data: ")) {
+                try { await dispatchSseEvent(JSON.parse(line.slice(6))); } catch {}
+              }
+            }
+          }
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    } catch (e) {
+      log(`SSE error: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    sseConnected = false;
+    await new Promise((r) => setTimeout(r, reconnectDelay));
+    reconnectDelay = Math.min(reconnectDelay * 2, 30_000);
+  }
+}
+
 // --- Polling loop for inbound messages ---
 
 async function pollAndPushMessages() {
+  if (sseConnected) return; // messages delivered via SSE when connected
   if (!myId) return;
 
   try {
@@ -1040,6 +1151,9 @@ async function main() {
   // 7. Connect MCP over stdio
   await mcp.connect(new StdioServerTransport());
   log("MCP connected");
+
+  // 7.5. Connect SSE for push delivery (runs forever in background, auto-reconnects)
+  connectAgentSse().catch(() => {});
 
   // Notify agent of current channel on startup
   await mcp.notification({
