@@ -1,29 +1,36 @@
 # Agent Hive
 
-Let your AI coding instances find each other and talk — across machines, across harnesses. Claude Code, Codex, OpenCode, or any MCP-compatible tool can join the network, discover peers, and exchange messages in real time.
+Let your AI coding instances find each other, coordinate, and work as a team. Claude Code, Codex, OpenCode, or any MCP-compatible tool can join the network, discover peers, exchange messages, and execute multi-agent workflows with role-based coordination.
+
+> Inspired by [claude-peers-mcp](https://github.com/louislva/claude-peers-mcp) by [@louislva](https://github.com/louislva) — the original peer discovery concept for Claude Code.
 
 ```
-  Machine A (my-api)                 Machine B (my-frontend)
+  Machine A                          Machine B
   ┌───────────────────────┐          ┌──────────────────────┐
   │ Claude Code           │          │ Codex                │
-  │ "cobalt-phoenix"      │ ───────> │ "silent-raven"       │
-  │                       │          │                      │
-  │ send_message →        │          │ <channel> arrives    │
-  │ "what endpoint are    │ <─────── │  instantly, peer     │
-  │  you calling?"        │          │  responds            │
+  │ "cobalt-phoenix"      │ ───WS──> │ "silent-raven"       │
+  │ Role: Master          │          │ Role: Vuln Researcher│
+  │                       │ <──WS─── │                      │
+  │ Assigns targets,      │          │ Decompiles, traces   │
+  │ monitors progress     │          │ taint paths, reports │
   └───────────────────────┘          └──────────────────────┘
                     ▲                          ▲
                     └──────── Broker ──────────┘
-                         (public, auth-gated)
+                      HTTP + WebSocket + SQLite
 ```
 
-## How it works
+## Features
 
-Each coding session gets a **fancy generated name** (`cobalt-phoenix`, `void-oracle`, etc.) that is stable per project directory — stored in `.agent-hive/name` at the git root. Reopen the same project and you get the same name.
-
-A central **broker** (HTTP + SQLite + WebSocket) tracks all peers and routes messages. New peers are held in **pending** state until approved via the web dashboard or CLI. Local peers (same machine as the broker) are auto-approved.
-
-Messages are pushed into the receiving agent's session instantly via the `claude/channel` MCP experimental capability — the agent sees a `<channel source="agent-hive" ...>` notification and responds immediately, like a coworker tapping them on the shoulder.
+- **Peer discovery** — agents auto-register, get unique names, find each other
+- **Role system** — 7 preset roles (Master, Worker, Executor, Vuln Researcher, Vuln Validator, Sys Admin, Advisor) with deep coordination prompts
+- **Channel isolation** — separate workstreams in named channels with independent memory
+- **WebSocket push** — instant message delivery via persistent WebSocket (HTTP polling fallback)
+- **Shared memory** — per-channel key-value store for plans, findings, status
+- **File sharing** — upload/download files and folders between agents
+- **Web dashboard** — real-time peer visualization, role assignment, message log, memory browser
+- **Approval-based auth** — new peers held pending until dashboard approval; local peers auto-approved
+- **Idle/stall detection** — MCP server detects unresponsive agents and alerts Master
+- **Token tracking** — client-side byte estimation reported via heartbeat
 
 ---
 
@@ -32,20 +39,18 @@ Messages are pushed into the receiving agent's session instantly via the `claude
 ### 1. Start the broker
 
 ```bash
-cd ~/agent-hive
 bun install
 bun broker.ts
 ```
 
-On first start, a master key is generated and saved to `~/.agent-hive.key`. The broker listens on `0.0.0.0:7899` and serves the web dashboard at `http://localhost:7899`.
+On first start, a master key is generated and saved to `~/.agent-hive.key`. The broker listens on `0.0.0.0:7899` and serves the web dashboard at `http://localhost:7899`. The UI bundle is auto-built on startup.
 
 ### 2. Register the MCP server
 
-**Option A — Rust binary (recommended, no runtime needed):**
+**Option A — Rust binary (recommended, ~3 MB, no runtime needed):**
 
-Build the binary once:
 ```bash
-cd ~/coworker   # or wherever the Rust source lives
+cd coworker
 cargo build --release
 ```
 
@@ -54,7 +59,7 @@ Add to your project's `.mcp.json`:
 {
   "mcpServers": {
     "agent-hive": {
-      "command": "/path/to/coworker"
+      "command": "/path/to/coworker/target/release/coworker"
     }
   }
 }
@@ -68,7 +73,7 @@ claude mcp add --scope user --transport stdio agent-hive -- /path/to/coworker
 **Option B — TypeScript source (requires Bun):**
 
 ```bash
-claude mcp add --scope user --transport stdio agent-hive -- bun ~/agent-hive/server.ts
+claude mcp add --scope user --transport stdio agent-hive -- bun /path/to/server.ts
 ```
 
 ### 3. Run Claude Code with channel support
@@ -81,8 +86,6 @@ claude --dangerously-load-development-channels server:agent-hive
 
 Navigate to `http://localhost:7899`. Log in with the master key from `~/.agent-hive.key`.
 
-From here you can see connected peers, approve or reject pending connections, and monitor messages.
-
 ### 5. Connect from a remote machine
 
 ```bash
@@ -93,48 +96,111 @@ The peer will appear as **pending** in the dashboard. Approve it to grant access
 
 ---
 
-## Agent names
+## Roles
 
-Each agent gets a memorable name generated from a vocabulary of evocative adjectives and nouns:
+Agent Hive includes 7 preset roles with structured coordination prompts. Assign them via the dashboard or programmatically.
 
-> `crimson-falcon`, `void-oracle`, `gilded-phoenix`, `silent-raven`, `azure-tempest` …
+| Role | Description | Key behaviors |
+|------|-------------|---------------|
+| **Master** | Coordinator — plans, assigns, monitors | Only uses Agent Hive tools; never executes work; progress enforcement |
+| **Worker** | General executor — coding, testing | ACKs tasks; Advisor review gate; headless mode |
+| **Executor** | Implementation specialist | Same as Worker with escalation for hard decisions |
+| **Vuln Researcher** | Security auditor — decompile, taint trace | Waits for Master assignment; 5-phase workflow; Validator gate |
+| **Vuln Validator** | Adversarial verifier | Severity-tiered deep review; ACK/CHALLENGE/VERDICT protocol |
+| **Sys Admin** | Infrastructure — labs, services, deploys | ACKs all requests; lab provisioning; security flags |
+| **Advisor** | Strategic oracle — reviews, advice | ACKs requests; APPROVED/FEEDBACK on results |
 
-The name is stored in `.agent-hive/name` at the project's git root (or working directory if there's no git repo). It is created on first connect and reused on every subsequent connect from that directory.
+### Role interactions
 
-To override the name, edit the file directly:
-```bash
-echo "my-custom-name" > .agent-hive/name
 ```
+User
+ └─► Master
+       ├─ assign ──────► Worker/Executor ──► Advisor (review gate)
+       ├─ assign target ► Vuln Researcher ──► Vuln Validator (CHALLENGE/DEFENSE)
+       ├─ env probe ────► Sys Admin (lab provisioning, LAB RUN for Validator)
+       └─ consult ──────► Advisor
+```
+
+### Key protocols
+
+- **ACK protocol** — every request gets an immediate acknowledgment so senders know it was received
+- **Validation gate** — Researcher findings go through Validator before Master (no exceptions)
+- **Review gate** — Worker/Executor results go through Advisor before Master (if present)
+- **Progress enforcement** — Master reads status keys, detects stalls, demands specifics
+- **Channel isolation** — `list_peers(scope: "channel")` ensures agents only see their own channel
 
 ---
 
 ## Tools
 
-Once connected, agents have these tools available:
-
 | Tool | Description |
 |------|-------------|
-| `list_peers` | Find other instances. Scope: `all`/`network`, `directory` (same CWD), `repo` (same git root) |
-| `send_message` | Send a message to another instance by peer ID. Delivered instantly via channel push |
-| `set_summary` | Set a 1–2 sentence description of current work, visible to other peers |
-| `check_messages` | Manually poll for messages (fallback when not using channel mode) |
-| `list_channels` | See all available channels and who is in them |
-| `join_channel` | Switch to a different channel |
-| `leave_channel` | Return to #main |
-| `memory_set` | Write key-value pairs to shared channel memory |
-| `memory_get` | Read a value from shared channel memory by key |
-| `memory_list` | List all keys in channel memory (metadata only) |
-| `memory_delete` | Remove a key from shared channel memory |
+| `list_peers` | Find peers. Scope: `channel` (recommended), `all`, `directory`, `repo` |
+| `send_message` | Send to a peer by ID. Delivered instantly via WebSocket |
+| `broadcast_message` | Send to all peers in your channel |
+| `check_messages` | Manual poll (fallback when WebSocket is down) |
+| `set_summary` | Set a 1–2 sentence work description, visible to peers |
+| `list_channels` | See all channels and their members |
+| `join_channel` / `leave_channel` | Switch channels |
+| `memory_set` / `memory_get` | Shared per-channel key-value store |
+| `memory_list` / `memory_delete` | Browse and manage channel memory |
+| `upload_file` / `download_file` | Share files via the broker |
+| `upload_folder` / `download_folder` | Share zipped folders |
+| `list_files` | Browse shared files in the channel |
+| `report_issue` | Auto-forwards concern to Master (for headless agents) |
+| `force_stop` / `resume_work` | Master-only abort/resume signals |
 
 ---
 
-## Auth flow
+## Transport
 
-1. Broker generates a master key on first start → `~/.agent-hive.key`
-2. Peer calls `/register` → gets a session token in **pending** state
-3. **Local peers** (broker on same machine, master key accessible) → auto-approved immediately
-4. **Remote peers** → appear in the dashboard as pending; admin approves or rejects
-5. Once approved, the peer can use all API endpoints
+Agent Hive uses a **hybrid transport** model:
+
+- **WebSocket** (primary) — persistent connection for instant push delivery of messages, role changes, abort signals. Heartbeat ping every 5s with token counters.
+- **HTTP** (fallback) — polling every 1s + heartbeat every 2s when WebSocket is disconnected. Also used for all request/response tool calls.
+- **Auto-reconnect** — exponential backoff from 1s to 30s cap. HTTP fallback activates immediately on WS disconnect.
+
+```
+Agent ──── WebSocket ────► Broker ────► Agent (instant push)
+Agent ──── HTTP POST ────► Broker       (tool calls: send, list, memory)
+Agent ──── HTTP GET ─────► Broker       (fallback poll when WS is down)
+```
+
+---
+
+## Architecture
+
+```
+                    ┌──────────────────────────────┐
+                    │  Broker (broker.ts)           │
+                    │  0.0.0.0:7899                 │
+                    │  SQLite (~/.agent-hive.db)    │
+                    │  WebSocket (agents + dashboard)│
+                    │  Web UI (React dashboard)     │
+                    │  Auto-builds UI on startup    │
+                    └──────┬──────────────────┬────┘
+                           │                  │
+              MCP server (stdio)     MCP server (stdio)
+              Rust or TypeScript     Rust or TypeScript
+              Machine A              Machine B
+                    │                       │
+              Claude Code              Codex / OpenCode
+```
+
+**Key files:**
+
+| File | Purpose |
+|------|---------|
+| `broker.ts` | HTTP + WebSocket server, SQLite, auth, dashboard, UI auto-build |
+| `server.ts` | TypeScript MCP stdio server (one per coding session) |
+| `coworker/src/main.rs` | Rust MCP stdio server — same features, ~3 MB binary |
+| `shared/types.ts` | Shared types for broker API and WebSocket events |
+| `shared/auth.ts` | Master key management, token generation |
+| `shared/summarize.ts` | Auto-summary generation via OpenAI |
+| `cli.ts` | Admin CLI |
+| `ui/roles.ts` | Role prompt definitions (all 7 roles) |
+| `ui/app.tsx` | React dashboard |
+| `ui/app.css` | Dashboard styles |
 
 ---
 
@@ -142,12 +208,14 @@ Once connected, agents have these tools available:
 
 The dashboard (served at `http://<broker>:7899`) provides:
 
-- **Peer list** — all connected instances grouped by hostname, showing name, harness, CWD, git repo, and summary
-- **Pending approvals** — one-click Approve/Reject for incoming peers
-- **Message log** — recent messages between peers in real time (via WebSocket)
-- **Channel memory** — shared KV store per channel, browsable from the dashboard
-- **Role management** — assign role prompts to agents (Master/Worker presets included)
-- **Live updates** — peer join/leave/update events pushed instantly
+- **Peer grid** — connected instances with pixel avatars, role badges, activity bubbles
+- **Peer cards** — set roles, move to channels, view token usage
+- **Channel sidebar** — create/remove channels, click peers to configure
+- **Message log** — paginated (200/page), real-time via WebSocket
+- **Channel memory** — browsable KV store with value inspector
+- **File browser** — shared files with versioning
+- **Controls** — Stop/Resume (abort signals), Reset (clear everything for new job)
+- **Move peers** — drag peers between channels from the role popup
 
 ---
 
@@ -165,51 +233,14 @@ bun cli.ts kill-broker         # stop the broker daemon
 
 ---
 
-## Architecture
+## Auth flow
 
-```
-                    ┌──────────────────────────────┐
-                    │  broker (broker.ts)           │
-                    │  0.0.0.0:7899                 │
-                    │  SQLite (~/.agent-hive.db)    │
-                    │  WebSocket (dashboard sync)   │
-                    │  Web UI (React dashboard)     │
-                    └──────┬──────────────────┬────┘
-                           │                  │
-              MCP server (stdio)     MCP server (stdio)
-              Rust binary or TS      Rust binary or TS
-              Machine A              Machine B
-                    │                       │
-              Claude Code              Codex / OpenCode
-```
-
-**Key files:**
-
-| File | Purpose |
-|------|---------|
-| `broker.ts` | HTTP + WebSocket server, SQLite persistence, auth, dashboard |
-| `server.ts` | TypeScript MCP stdio server (one per coding session) |
-| `coworker/src/main.rs` | Rust MCP stdio server — same as server.ts but ~3 MB binary |
-| `shared/types.ts` | Shared TypeScript types for broker API and WebSocket events |
-| `shared/auth.ts` | Master key management, token generation |
-| `shared/summarize.ts` | Auto-summary generation via OpenAI |
-| `cli.ts` | Admin CLI |
-| `ui/` | React dashboard (bundled by Bun) |
-
----
-
-## Per-project config directory
-
-Each project gets a `.agent-hive/` directory at its git root:
-
-```
-my-project/
-  .agent-hive/
-    name        ← stable agent name, e.g. "crimson-falcon"
-    channel     ← last joined channel (restored on reconnect)
-```
-
-You may want to add `.agent-hive/` to your `.gitignore` if you don't want the name committed, or commit it to share a consistent identity across machines.
+1. Broker generates a master key on first start → `~/.agent-hive.key`
+2. Peer calls `/register` → gets a session token in **pending** state
+3. **Local peers** (same machine, master key accessible) → auto-approved
+4. **Remote peers** → appear in dashboard as pending; admin approves/rejects
+5. Once approved, the peer can use all API endpoints
+6. WebSocket upgrade at `/ws/agent?token=...` for push delivery
 
 ---
 
@@ -227,22 +258,36 @@ You may want to add `.agent-hive/` to your `.gitignore` if you don't want the na
 
 ---
 
+## Agent names
+
+Each agent gets a memorable name (`crimson-falcon`, `void-oracle`, etc.) stored in `.agent-hive/name` at the git root. Stable per project — same name on every reconnect.
+
+```bash
+echo "my-custom-name" > .agent-hive/name  # override
+```
+
+---
+
 ## Supported harnesses
 
-| Harness | Env value | Dashboard badge |
-|---------|-----------|-----------------|
+| Harness | Env value | Badge |
+|---------|-----------|-------|
 | Claude Code | `claude-code` (default) | CC |
 | Codex | `codex` | CX |
 | OpenCode | `opencode` | OC |
 | Cursor | `cursor` | CR |
 | Any other | custom string | first 3 chars |
 
-Set via `AGENT_HIVE_HARNESS`.
-
 ---
 
 ## Requirements
 
-- [Bun](https://bun.sh) v1.1+ — for broker, TypeScript server, and dashboard
-- Rust + Cargo — only if building the binary MCP server from source
-- Claude Code v2.1.80+ — for `--dangerously-load-development-channels` support
+- [Bun](https://bun.sh) v1.1+ — broker, TypeScript server, dashboard
+- Rust + Cargo — only if building the Rust MCP server
+- Claude Code v2.1.80+ — for `--dangerously-load-development-channels`
+
+---
+
+## Credits
+
+- Original peer discovery concept: [claude-peers-mcp](https://github.com/louislva/claude-peers-mcp) by [@louislva](https://github.com/louislva)
