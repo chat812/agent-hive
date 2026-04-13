@@ -471,6 +471,13 @@ function handleListPeers(body: ListPeersRequest): Peer[] {
     case "network":
       peers = selectAllPeers.all() as Peer[];
       break;
+    case "channel": {
+      // Return only peers in the same channel as the requesting peer
+      const requester = body.exclude_id ? selectPeerById.get(body.exclude_id) as Peer | null : null;
+      const ch = requester?.channel ?? "main";
+      peers = selectPeersByChannel.all(ch) as Peer[];
+      break;
+    }
     case "directory":
       peers = selectPeersByDirectory.all(body.cwd) as Peer[];
       break;

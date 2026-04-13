@@ -278,7 +278,7 @@ When you receive a <channel source="agent-hive" ...> message: read it and carry 
 Read the from_id, from_summary, from_cwd, and from_harness attributes to understand who sent the message. Reply by calling send_message with their from_id.
 
 Available tools:
-- list_peers: Discover other AI coding instances (scope: all/network/directory/repo)
+- list_peers: Discover other AI coding instances (scope: channel/all/network/directory/repo)
 - send_message: Send a message to another instance by ID
 - set_summary: Set a 1-2 sentence summary of what you're working on (visible to other peers)
 - check_messages: Manually check for new messages
@@ -306,9 +306,9 @@ const TOOLS = [
       properties: {
         scope: {
           type: "string" as const,
-          enum: ["all", "network", "directory", "repo"],
+          enum: ["channel", "all", "network", "directory", "repo"],
           description:
-            'Required. One of: "all" (everyone), "network" (same as all), "directory" (same cwd), "repo" (same git repo).',
+            'Required. One of: "channel" (same channel — recommended), "all" (everyone), "network" (same as all), "directory" (same cwd), "repo" (same git repo).',
         },
       },
       required: ["scope"],
