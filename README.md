@@ -5,18 +5,20 @@ Let your AI coding instances find each other, coordinate, and work as a team. Cl
 > Inspired by [claude-peers-mcp](https://github.com/louislva/claude-peers-mcp) by [@louislva](https://github.com/louislva) — the original peer discovery concept for Claude Code.
 
 ```
-  Machine A                          Machine B
-  ┌───────────────────────┐          ┌──────────────────────┐
-  │ Claude Code           │          │ Codex                │
-  │ "cobalt-phoenix"      │ ───WS──> │ "silent-raven"       │
-  │ Role: Master          │          │ Role: Vuln Researcher│
-  │                       │ <──WS─── │                      │
-  │ Assigns targets,      │          │ Decompiles, traces   │
-  │ monitors progress     │          │ taint paths, reports │
-  └───────────────────────┘          └──────────────────────┘
-                    ▲                          ▲
-                    └──────── Broker ──────────┘
-                      HTTP + WebSocket + SQLite
+  Machine A                                          Machine B
+  ┌───────────────────────┐                          ┌──────────────────────┐
+  │ Claude Code           │                          │ Codex                │
+  │ "cobalt-phoenix"      │                          │ "silent-raven"       │
+  │ Role: Master          │                          │ Role: Vuln Researcher│
+  └──────────┬────────────┘                          └──────────┬───────────┘
+             │ WS + HTTP                                        │ WS + HTTP
+             ▼                                                  ▼
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                        Broker (broker.ts)                              │
+  │                  HTTP + WebSocket + SQLite + Dashboard                 │
+  │                                                                       │
+  │  Routes messages, manages channels, stores memory, pushes events      │
+  └─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Features
