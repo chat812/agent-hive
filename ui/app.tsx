@@ -858,22 +858,44 @@ function PeerAvatarItem({ peer }: { peer: Peer }) {
 
 // --- Message Box ---
 
+const PAGE_SIZE = 200;
+
 function MessageBox({ messages, peers, newMessageKeys }: { messages: Message[]; peers: Peer[]; newMessageKeys: Set<string> }) {
+  const [page, setPage] = useState(0);
+
   if (messages.length === 0) {
     return <div className="empty">No messages yet.</div>;
   }
 
-  // messages[0] is newest; display oldest→newest so newest is at bottom
-  const ordered = [...messages].reverse();
+  const totalPages = Math.ceil(messages.length / PAGE_SIZE);
+  // messages[0] is newest; paginate then reverse for oldest→newest display
+  const pageMessages = messages.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const ordered = [...pageMessages].reverse();
 
   return (
     <div className="message-box">
+      {totalPages > 1 && (
+        <div className="message-pagination">
+          <button className="btn-page" disabled={page >= totalPages - 1} onClick={() => setPage(page + 1)}>← Older</button>
+          <span className="page-info">{messages.length} messages · page {page + 1}/{totalPages}</span>
+          <button className="btn-page" disabled={page === 0} onClick={() => setPage(0)}>Latest</button>
+          {page > 0 && <button className="btn-page" onClick={() => setPage(page - 1)}>Newer →</button>}
+        </div>
+      )}
       {ordered.map((m, i) => {
         const key = `${m.from_id}-${m.sent_at}-${i}`;
         return (
           <MessageItem key={key} msg={m} peers={peers} isNew={newMessageKeys.has(`${m.from_id}-${m.sent_at}`)} />
         );
       })}
+      {totalPages > 1 && (
+        <div className="message-pagination">
+          <button className="btn-page" disabled={page >= totalPages - 1} onClick={() => setPage(page + 1)}>← Older</button>
+          <span className="page-info">page {page + 1}/{totalPages}</span>
+          <button className="btn-page" disabled={page === 0} onClick={() => setPage(0)}>Latest</button>
+          {page > 0 && <button className="btn-page" onClick={() => setPage(page - 1)}>Newer →</button>}
+        </div>
+      )}
     </div>
   );
 }
@@ -943,7 +965,7 @@ function Dashboard({ masterToken }: { masterToken: string }) {
         break;
       case "message_sent": {
         const msgKey = `${event.message.from_id}-${event.message.sent_at}`;
-        setMessages((prev) => [event.message, ...prev].slice(0, 50));
+        setMessages((prev) => [event.message, ...prev]);
         setNewMessageKeys((prev) => new Set([...prev, msgKey]));
         setTimeout(() => {
           setNewMessageKeys((prev) => {

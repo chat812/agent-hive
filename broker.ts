@@ -311,7 +311,7 @@ const selectUndelivered = db.prepare("SELECT * FROM messages WHERE to_id = ? AND
 const markDelivered = db.prepare("UPDATE messages SET delivered = 1 WHERE id = ?");
 const insertToken = db.prepare("INSERT INTO tokens (token, peer_id, created_at) VALUES (?, ?, ?)");
 const selectToken = db.prepare("SELECT * FROM tokens WHERE token = ?");
-const selectRecentMessages = db.prepare("SELECT * FROM messages ORDER BY sent_at DESC LIMIT 50");
+const selectRecentMessages = db.prepare("SELECT * FROM messages ORDER BY sent_at DESC LIMIT 1000");
 
 // --- Generate peer ID ---
 
