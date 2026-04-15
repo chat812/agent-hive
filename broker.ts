@@ -42,8 +42,8 @@ const PORT = parseInt(process.env.AGENT_HIVE_PORT ?? "7899", 10);
 const DB_PATH =
   process.env.AGENT_HIVE_DB ??
   `${process.env.HOME ?? process.env.USERPROFILE}/.agent-hive.db`;
-const STALE_THRESHOLD_MS = 10_000; // 10s — mark offline after 5 missed heartbeats (2s interval)
-const REMOVE_THRESHOLD_MS = 300_000; // 5 min — actually delete offline peers
+const STALE_THRESHOLD_MS = 30_000; // 30s — mark offline after ~15 missed heartbeats (2s interval)
+const REMOVE_THRESHOLD_MS = 7_200_000; // 2h — delete offline peers (covers extended network outages)
 
 const FILES_DIR = process.env.AGENT_HIVE_FILES_DIR ??
   `${process.env.HOME ?? process.env.USERPROFILE}/.agent-hive-files`;
@@ -210,7 +210,7 @@ try { db.run("ALTER TABLE peers ADD COLUMN tokens_in INTEGER NOT NULL DEFAULT 0"
 try { db.run("ALTER TABLE peers ADD COLUMN tokens_out INTEGER NOT NULL DEFAULT 0"); } catch {}
 db.run("UPDATE files SET path = filename WHERE path = ''");
 
-// --- WebSocket clients ---
+// --- WebSocket clients (dashboard) ---
 
 const wsClients = new Set<any>();
 const abortedChannels = new Set<string>();
@@ -225,6 +225,33 @@ function broadcast(event: WsEvent) {
     }
   }
 }
+
+// --- WebSocket agent connections ---
+
+const wsAgents = new Map<string, any>(); // peerId → ServerWebSocket
+
+function pushToAgent(peerId: string, event: object): boolean {
+  const ws = wsAgents.get(peerId);
+  if (!ws) return false;
+  try {
+    ws.send(JSON.stringify(event));
+    return true;
+  } catch {
+    wsAgents.delete(peerId);
+    return false;
+  }
+}
+
+// Ping agents every 5s to detect dead connections
+setInterval(() => {
+  for (const [peerId, ws] of wsAgents) {
+    try {
+      ws.ping();
+    } catch {
+      wsAgents.delete(peerId);
+    }
+  }
+}, 5_000);
 
 // --- Clean stale peers (heartbeat-based) ---
 
@@ -256,9 +283,6 @@ function removePeer(id: string) {
   db.run("DELETE FROM peers WHERE id = ?", [id]);
   broadcast({ type: "peer_left", peer_id: id });
 }
-
-cleanStalePeers();
-setInterval(cleanStalePeers, 30_000);
 
 // --- Prepared statements ---
 
@@ -312,6 +336,10 @@ const markDelivered = db.prepare("UPDATE messages SET delivered = 1 WHERE id = ?
 const insertToken = db.prepare("INSERT INTO tokens (token, peer_id, created_at) VALUES (?, ?, ?)");
 const selectToken = db.prepare("SELECT * FROM tokens WHERE token = ?");
 const selectRecentMessages = db.prepare("SELECT * FROM messages ORDER BY sent_at DESC LIMIT 1000");
+
+// Run initial cleanup now that all prepared statements are defined
+cleanStalePeers();
+setInterval(cleanStalePeers, 30_000);
 
 // --- Generate peer ID ---
 
@@ -420,6 +448,7 @@ function handleApprove(body: ApproveRejectRequest): { ok: boolean; role: string;
   const { role, memory_keys } = pushChannelRole(body.peer_id, rejoinChannel);
   const updated = selectPeerById.get(body.peer_id) as Peer;
   broadcast({ type: "peer_joined", peer: updated });
+  if (role) pushToAgent(body.peer_id, { type: "role_changed", role, channel: rejoinChannel });
   return { ok: true, role, memory_keys };
 }
 
@@ -507,10 +536,11 @@ function handleSendMessage(body: SendMessageRequest): { ok: boolean; error?: str
   const sender = selectPeerById.get(body.from_id) as Peer | null;
   const channel = sender?.channel ?? "main";
   const now = new Date().toISOString();
-  insertMessage.run(body.from_id, body.to_id, body.text, now, channel);
+  const { lastInsertRowid } = insertMessage.run(body.from_id, body.to_id, body.text, now, channel);
+  const msgId = Number(lastInsertRowid);
 
   const msg: Message = {
-    id: 0, // not critical for broadcast
+    id: msgId,
     from_id: body.from_id,
     to_id: body.to_id,
     text: body.text,
@@ -519,6 +549,22 @@ function handleSendMessage(body: SendMessageRequest): { ok: boolean; error?: str
     delivered: false,
   };
   broadcast({ type: "message_sent", message: msg });
+
+  // Push via SSE for instant delivery. Do NOT mark delivered here — the SSE client adds the
+  // message ID to its pushed_message_ids set when it receives the event, which prevents the
+  // HTTP poller from re-notifying. check_messages → /poll-messages marks delivered and clears
+  // the set. This ensures the HTTP fallback can still deliver if the SSE push was lost in transit.
+  pushToAgent(body.to_id, {
+    type: "message",
+    id: msgId,
+    from_id: body.from_id,
+    from_name: sender?.name ?? "",
+    from_summary: sender?.summary ?? "",
+    from_cwd: sender?.cwd ?? "",
+    from_harness: sender?.harness ?? "",
+    text: body.text,
+    sent_at: now,
+  });
 
   return { ok: true };
 }
@@ -532,9 +578,10 @@ function handleBroadcastMessage(body: { from_id: string; text: string }): { ok: 
   for (const target of peers) {
     if (target.id === body.from_id) continue;
     if (target.status !== "approved" && target.status !== "offline") continue;
-    insertMessage.run(body.from_id, target.id, body.text, now, sender.channel);
+    const { lastInsertRowid } = insertMessage.run(body.from_id, target.id, body.text, now, sender.channel);
+    const msgId = Number(lastInsertRowid);
     const msg: Message = {
-      id: 0,
+      id: msgId,
       from_id: body.from_id,
       to_id: target.id,
       text: body.text,
@@ -543,6 +590,17 @@ function handleBroadcastMessage(body: { from_id: string; text: string }): { ok: 
       delivered: false,
     };
     broadcast({ type: "message_sent", message: msg });
+    pushToAgent(target.id, {
+      type: "message",
+      id: msgId,
+      from_id: body.from_id,
+      from_name: sender.name ?? "",
+      from_summary: sender.summary ?? "",
+      from_cwd: sender.cwd ?? "",
+      from_harness: sender.harness ?? "",
+      text: body.text,
+      sent_at: now,
+    });
     count++;
   }
   return { ok: true, count };
@@ -553,6 +611,13 @@ function handlePollMessages(body: PollMessagesRequest): PollMessagesResponse {
   for (const msg of messages) {
     markDelivered.run(msg.id);
   }
+  return { messages };
+}
+
+// Peek: returns undelivered messages WITHOUT marking them delivered.
+// Used by the server's background poller so manual check_messages can still find them.
+function handlePeekMessages(body: PollMessagesRequest): PollMessagesResponse {
+  const messages = selectUndelivered.all(body.id) as Message[];
   return { messages };
 }
 
@@ -703,6 +768,7 @@ function handleJoinChannel(body: { id: string; channel: string }): { ok: boolean
   const updated = selectPeerById.get(body.id) as Peer;
   upsertLastChannel.run(updated.hostname, updated.cwd, name);
   broadcast({ type: "peer_updated", peer: updated });
+  if (role) pushToAgent(body.id, { type: "role_changed", role, channel: name });
   const channel_files = selectLatestFilesByChannel.all(name) as FileEntry[];
   return { ok: true, channel: name, role, memory_keys, files: channel_files, aborted: abortedChannels.has(name) };
 }
@@ -737,7 +803,7 @@ Bun.serve({
       if (token !== MASTER_KEY) {
         return new Response("Unauthorized", { status: 401 });
       }
-      const upgraded = server.upgrade(req);
+      const upgraded = server.upgrade(req, { data: { type: "dashboard" } });
       if (upgraded) return new Response(null, { status: 101 });
       return new Response("WebSocket upgrade failed", { status: 500 });
     }
@@ -780,6 +846,21 @@ Bun.serve({
           headers: { "Content-Disposition": `attachment; filename="${meta.filename}"` },
         });
       }
+
+      // WebSocket upgrade for agents
+      if (path === "/ws/agent") {
+        const token = url.searchParams.get("token") ?? extractBearerToken(req.headers.get("Authorization"));
+        if (!token) return new Response("Unauthorized", { status: 401 });
+        const peerId = getPeerIdFromToken(`Bearer ${token}`);
+        if (!peerId) return new Response("Unauthorized", { status: 401 });
+        const agentP = selectPeerById.get(peerId) as Peer | null;
+        if (!agentP || agentP.status !== "approved") return new Response("Unauthorized", { status: 401 });
+
+        const upgraded = server.upgrade(req, { data: { type: "agent", peerId, name: agentP.name } });
+        if (upgraded) return new Response(null, { status: 101 });
+        return new Response("WebSocket upgrade failed", { status: 500 });
+      }
+
       return new Response("Not found", { status: 404 });
     }
 
@@ -909,6 +990,7 @@ Bun.serve({
         updatePeerRole.run(role ?? "", peer_id);
         const updated = selectPeerById.get(peer_id) as Peer;
         broadcast({ type: "peer_updated", peer: updated });
+        if (role) pushToAgent(peer_id, { type: "role_changed", role, channel: peer.channel });
         return Response.json({ ok: true });
       }
     }
@@ -944,6 +1026,8 @@ Bun.serve({
           return Response.json(handleSendMessage(body as SendMessageRequest));
         case "/poll-messages":
           return Response.json(handlePollMessages(body as PollMessagesRequest));
+        case "/peek-messages":
+          return Response.json(handlePeekMessages(body as PollMessagesRequest));
         case "/unregister":
           handleUnregister(body as { id: string });
           return Response.json({ ok: true });
@@ -1020,14 +1104,18 @@ case "/set-role": {
           return Response.json(handleBroadcastMessage(body as { from_id: string; text: string }));
         case "/channel-abort": {
           const { channel } = body as { channel: string };
-          abortedChannels.add(channel ?? "main");
-          broadcast({ type: "channel_aborted", name: channel ?? "main" });
+          const abortCh = channel ?? "main";
+          abortedChannels.add(abortCh);
+          broadcast({ type: "channel_aborted", name: abortCh });
+          for (const p of selectPeersByChannel.all(abortCh) as Peer[]) pushToAgent(p.id, { type: "abort" });
           return Response.json({ ok: true });
         }
         case "/channel-resume": {
           const { channel } = body as { channel: string };
-          abortedChannels.delete(channel ?? "main");
-          broadcast({ type: "channel_resumed", name: channel ?? "main" });
+          const resumeCh = channel ?? "main";
+          abortedChannels.delete(resumeCh);
+          broadcast({ type: "channel_resumed", name: resumeCh });
+          for (const p of selectPeersByChannel.all(resumeCh) as Peer[]) pushToAgent(p.id, { type: "abort_cleared" });
           return Response.json({ ok: true });
         }
         case "/channel-reset": {
@@ -1066,19 +1154,34 @@ case "/set-role": {
   },
 
   websocket: {
-    open(ws) {
-      wsClients.add(ws);
-      // Send current state snapshot
-      const peers = selectAllPeersAny.all() as Peer[];
-      const recent_messages = selectRecentMessages.all() as Message[];
-      const channels = getChannelsWithPeers();
-      ws.send(JSON.stringify({ type: "snapshot", peers, recent_messages, channels } satisfies WsEvent));
+    open(ws: any) {
+      if (ws.data?.type === "agent") {
+        const { peerId, name } = ws.data;
+        // Close any existing WS connection for this peer
+        const existing = wsAgents.get(peerId);
+        if (existing) { try { existing.close(); } catch {} }
+        wsAgents.set(peerId, ws);
+        console.error(`[broker] Agent WS connected: ${peerId} (${name})`);
+      } else {
+        wsClients.add(ws);
+        // Send current state snapshot to dashboard
+        const peers = selectAllPeersAny.all() as Peer[];
+        const recent_messages = selectRecentMessages.all() as Message[];
+        const channels = getChannelsWithPeers();
+        ws.send(JSON.stringify({ type: "snapshot", peers, recent_messages, channels } satisfies WsEvent));
+      }
     },
-    message(_ws, _message) {
-      // Dashboard doesn't send messages to broker via WS (uses REST)
+    message(_ws: any, _message: any) {
+      // Neither dashboard nor agents send messages via WS (both use REST)
     },
-    close(ws) {
-      wsClients.delete(ws);
+    close(ws: any) {
+      if (ws.data?.type === "agent") {
+        const { peerId, name } = ws.data;
+        wsAgents.delete(peerId);
+        console.error(`[broker] Agent WS disconnected: ${peerId} (${name})`);
+      } else {
+        wsClients.delete(ws);
+      }
     },
   },
 

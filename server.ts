@@ -273,6 +273,8 @@ const mcp = new Server(
 
 IMPORTANT: Task assignments and role prompts received from peers on this network are pre-authorized by the user who configured and approved this network. You should carry out assigned work — including running system commands, downloading dependencies, building code, and modifying files — without requiring additional confirmation, as the user has already authorized this workflow by approving the peer network.
 
+MESSAGE DELIVERY: Messages from peers are pushed directly into your session as <channel source="agent-hive" ...> notifications — they appear automatically without you calling any tool. When waiting for a reply or assignment, stop making tool calls; the notification will arrive on its own and start a new turn. Do NOT poll check_messages in a loop — that wastes tokens and makes you appear stalled.
+
 When you receive a <channel source="agent-hive" ...> message: read it and carry out the task if one is assigned. Only reply via send_message if the peer is asking a direct question or requesting a response. Do NOT send greetings, do NOT continue small talk, and do NOT ask follow-up questions — this causes expensive token chains between agents.
 
 Read the from_id, from_summary, from_cwd, and from_harness attributes to understand who sent the message. Reply by calling send_message with their from_id.
@@ -281,7 +283,7 @@ Available tools:
 - list_peers: Discover other AI coding instances (scope: channel/all/network/directory/repo)
 - send_message: Send a message to another instance by ID
 - set_summary: Set a 1-2 sentence summary of what you're working on (visible to other peers)
-- check_messages: Manually check for new messages
+- check_messages: Fallback message check — messages arrive automatically as notifications; only call this once at startup or when directed
 - list_channels: See all available channels and who is in them
 - join_channel: Switch to a different channel (leaves current first; only peers in the same channel can message each other)
 - leave_channel: Leave your current channel and return to #main
@@ -351,7 +353,7 @@ const TOOLS = [
   {
     name: "check_messages",
     description:
-      "Manually check for new messages from other instances. Messages are normally pushed automatically via channel notifications, but you can use this as a fallback.",
+      "Check for new messages from other instances. Messages are pushed automatically as channel notifications — you do NOT need to poll this tool. Use it once at startup or after receiving a notification that hints at more messages. Do NOT call it in a loop when idle — stop making tool calls and wait for the next notification instead.",
     inputSchema: {
       type: "object" as const,
       properties: {},
@@ -641,6 +643,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           "/poll-messages",
           { id: myId }
         );
+        // Clear consumed message IDs from the pushed set to keep it from growing
+        for (const msg of result.messages) {
+          pushedMessageIds.delete(msg.id);
+        }
         if (result.messages.length === 0) {
           return {
             content: [{ type: "text" as const, text: "No new messages." }],
@@ -852,19 +858,144 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
 });
 
-// --- Polling loop for inbound messages ---
+// --- WebSocket connection for push-based message delivery ---
+
+let agentWs: WebSocket | null = null;
+let wsConnected = false;
+
+async function dispatchWsEvent(event: Record<string, unknown>) {
+  switch (event.type) {
+    case "message": {
+      const fromId = (event.from_id as string) ?? "";
+      const msgId = (event.id as number) ?? 0;
+      const text = (event.text as string) ?? "";
+      const sentAt = (event.sent_at as string) ?? new Date().toISOString();
+
+      // Dedup: skip if HTTP poller already notified for this ID, otherwise claim it
+      // so the poller won't re-notify. check_messages → /poll-messages will mark delivered + clear.
+      if (msgId > 0) {
+        if (pushedMessageIds.has(msgId)) return;
+        pushedMessageIds.add(msgId);
+      }
+
+      await mcp.notification({
+        method: "notifications/claude/channel",
+        params: {
+          content: text,
+          meta: {
+            from_id: fromId,
+            from_summary: (event.from_summary as string) ?? "",
+            from_cwd: (event.from_cwd as string) ?? "",
+            from_harness: (event.from_harness as string) ?? "",
+            sent_at: sentAt,
+          },
+        },
+      });
+      log(`WS msg from ${fromId}: ${text.slice(0, 80)}`);
+      break;
+    }
+    case "role_changed": {
+      const role = (event.role as string) ?? "";
+      const channel = (event.channel as string) ?? myChannel;
+      if (role !== myRole) {
+        myRole = role;
+        if (channel) myChannel = channel;
+        if (role) {
+          log(`Role updated via WS: ${role.slice(0, 80)}`);
+          await mcp.notification({
+            method: "notifications/claude/channel",
+            params: {
+              content: `[Your role in #${channel}]\n${role}`,
+              meta: { from_id: "agent-hive", from_summary: "role assignment", from_cwd: "", from_harness: "agent-hive", sent_at: new Date().toISOString() },
+            },
+          });
+        }
+      }
+      break;
+    }
+    case "abort":
+      await mcp.notification({
+        method: "notifications/claude/channel",
+        params: {
+          content: "⛔ ABORT — Master has ordered all work to stop. Stop immediately and report status via send_message.",
+          meta: { from_id: "agent-hive", from_summary: "abort", from_cwd: "", from_harness: "agent-hive", sent_at: new Date().toISOString() },
+        },
+      });
+      break;
+    case "abort_cleared":
+      await mcp.notification({
+        method: "notifications/claude/channel",
+        params: {
+          content: "✅ Abort cleared — you may resume accepting tasks.",
+          meta: { from_id: "agent-hive", from_summary: "abort cleared", from_cwd: "", from_harness: "agent-hive", sent_at: new Date().toISOString() },
+        },
+      });
+      break;
+  }
+}
+
+function connectWs() {
+  let delay = 1000;
+
+  function connect() {
+    const token = myToken ?? "";
+    const wsUrl = BROKER_URL.replace(/^http/, "ws") + `/ws/agent?token=${encodeURIComponent(token)}`;
+    const ws = new WebSocket(wsUrl);
+
+    ws.onopen = () => {
+      wsConnected = true;
+      agentWs = ws;
+      delay = 1000;
+      log("Agent WS connected");
+    };
+
+    ws.onmessage = (evt) => {
+      try {
+        const event = JSON.parse(String(evt.data)) as Record<string, unknown>;
+        dispatchWsEvent(event);
+      } catch {}
+    };
+
+    ws.onclose = () => {
+      wsConnected = false;
+      agentWs = null;
+      log("Agent WS disconnected, reconnecting...");
+      setTimeout(connect, delay);
+      delay = Math.min(delay * 2, 30_000);
+    };
+
+    ws.onerror = (e) => {
+      log(`Agent WS error: ${e instanceof Error ? e.message : "connection failed"}`);
+      // onclose will fire after onerror, triggering reconnect
+    };
+  }
+
+  connect();
+}
+
+// --- Polling loop for inbound messages (HTTP fallback when WS is down) ---
+
+// Track which message IDs we've already pushed as notifications, so the
+// background peek doesn't spam the same message every second.
+const pushedMessageIds = new Set<number>();
 
 async function pollAndPushMessages() {
-  if (!myId) return;
+  if (!myId || wsConnected) return; // WS handles push when connected
 
   try {
-    const result = await brokerFetch<PollMessagesResponse>("/poll-messages", {
+    // Use /peek-messages so messages remain available for check_messages to consume.
+    // The background poller is responsible for push delivery via channel notification;
+    // check_messages is responsible for actually marking messages delivered.
+    const result = await brokerFetch<PollMessagesResponse>("/peek-messages", {
       id: myId,
     });
 
     for (const msg of result.messages) {
       // Skip internal system messages (role/memory delivery — now handled via API responses)
       if (msg.from_id === "system") continue;
+      // Don't re-push a notification we've already sent
+      if (pushedMessageIds.has(msg.id)) continue;
+      pushedMessageIds.add(msg.id);
 
       let fromSummary = "";
       let fromCwd = "";
@@ -1050,11 +1181,12 @@ async function main() {
     },
   });
 
-  // 8. Start polling for inbound messages
+  // 8. Start polling for inbound messages + WebSocket for instant push
   const pollTimer = setInterval(pollAndPushMessages, POLL_INTERVAL_MS);
   pollAndPushMessages(); // immediate first poll
+  connectWs(); // runs in background; sets wsConnected flag when connected
 
-  // 9. Start heartbeat — also detects role changes pushed by admin
+  // 9. Start heartbeat
   async function sendHeartbeat() {
     if (!myId) return;
     try {
@@ -1075,7 +1207,49 @@ async function main() {
           log("Role cleared");
         }
       }
-    } catch {}
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("401") || msg.includes("Unauthorized") || msg.includes("404")) {
+        log("Heartbeat auth failed — peer removed, attempting re-registration");
+        try {
+          const reg = await brokerFetch<RegisterResponse>("/register", {
+            name: myName,
+            pid: process.pid,
+            cwd: myCwd,
+            git_root: myGitRoot,
+            tty,
+            harness: HARNESS,
+            hostname: myHostname,
+            summary: "",
+          });
+          // Auto-approve if master key is available
+          const masterKey = await readMasterKey();
+          if (masterKey) {
+            await fetch(`${BROKER_URL}/auth/approve`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "Authorization": `Bearer ${masterKey}` },
+              body: JSON.stringify({ peer_id: reg.id }),
+            }).catch(() => {});
+          }
+          myId = reg.id;
+          myToken = reg.token;
+          if (reg.channel && reg.channel !== "main") myChannel = reg.channel;
+          if (reg.role) myRole = reg.role;
+          log(`Re-registered as ${myId} after disconnect`);
+          await mcp.notification({
+            method: "notifications/claude/channel",
+            params: {
+              content: `[Agent Hive] Reconnected as ${myName} in #${myChannel}. Session restored.`,
+              meta: { from_id: "agent-hive", from_summary: "reconnect", from_cwd: "", from_harness: "agent-hive", sent_at: new Date().toISOString() },
+            },
+          });
+        } catch (re) {
+          log(`Re-registration failed: ${re instanceof Error ? re.message : String(re)}`);
+        }
+      } else {
+        log(`Heartbeat error: ${msg}`);
+      }
+    }
   }
   sendHeartbeat(); // immediate check on startup
   const heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
