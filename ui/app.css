@@ -690,6 +690,74 @@ header {
   white-space: pre-wrap;
 }
 
+/* Markdown rendering */
+.message-text.markdown-body {
+  white-space: normal;
+  word-wrap: break-word;
+}
+.message-text.markdown-body p { margin: 0.4em 0; }
+.message-text.markdown-body p:first-child { margin-top: 0; }
+.message-text.markdown-body p:last-child { margin-bottom: 0; }
+.message-text.markdown-body code {
+  background: rgba(255,255,255,0.08);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  font-size: 0.9em;
+  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", monospace;
+}
+.message-text.markdown-body pre {
+  background: rgba(0,0,0,0.3);
+  border-radius: 6px;
+  padding: 0.6em 0.8em;
+  overflow-x: auto;
+  margin: 0.5em 0;
+}
+.message-text.markdown-body pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.85em;
+}
+.message-text.markdown-body strong { color: #fff; }
+.message-text.markdown-body em { color: var(--text-dim); }
+.message-text.markdown-body ul, .message-text.markdown-body ol {
+  margin: 0.3em 0;
+  padding-left: 1.5em;
+}
+.message-text.markdown-body li { margin: 0.15em 0; }
+.message-text.markdown-body blockquote {
+  border-left: 3px solid var(--accent);
+  margin: 0.5em 0;
+  padding: 0.3em 0.8em;
+  color: var(--text-dim);
+}
+.message-text.markdown-body h1, .message-text.markdown-body h2,
+.message-text.markdown-body h3, .message-text.markdown-body h4 {
+  color: #fff;
+  margin: 0.6em 0 0.3em;
+}
+.message-text.markdown-body h1 { font-size: 1.2em; }
+.message-text.markdown-body h2 { font-size: 1.1em; }
+.message-text.markdown-body h3 { font-size: 1.05em; }
+.message-text.markdown-body a { color: var(--accent); }
+.message-text.markdown-body hr {
+  border: none;
+  border-top: 1px solid rgba(255,255,255,0.1);
+  margin: 0.6em 0;
+}
+.message-text.markdown-body table {
+  border-collapse: collapse;
+  margin: 0.5em 0;
+  font-size: 0.9em;
+}
+.message-text.markdown-body th, .message-text.markdown-body td {
+  border: 1px solid rgba(255,255,255,0.15);
+  padding: 0.3em 0.6em;
+}
+.message-text.markdown-body th {
+  background: rgba(255,255,255,0.06);
+  color: #fff;
+}
+
 /* Empty state */
 .empty {
   text-align: center;

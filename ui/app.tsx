@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createRoot } from "react-dom/client";
+import { marked } from "marked";
 import type { Peer, Message, Channel, ChannelRole, ChannelMemoryEntry, FileEntry, WsEvent } from "../shared/types.ts";
 import { PRESET_ROLES } from "./roles.ts";
 
@@ -702,7 +703,7 @@ function MessageItem({ msg, peers, isNew }: { msg: Message; peers: Peer[]; isNew
         <span className="to" style={{ color: peerColor(toName) }}>{toName}<RoleEmoji role={toPeer?.role} /></span>
         <span>{timeAgo(msg.sent_at)}</span>
       </div>
-      <div className="message-text">{msg.text}</div>
+      <div className="message-text markdown-body" dangerouslySetInnerHTML={{ __html: marked.parse(msg.text || "", { async: false }) as string }} />
     </div>
   );
 }
