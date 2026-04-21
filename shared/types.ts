@@ -20,6 +20,7 @@ export interface Peer {
   last_seen: string; // ISO timestamp
   tokens_in: number; // estimated input tokens consumed (tool results returned to agent)
   tokens_out: number; // estimated output tokens produced (tool params sent by agent)
+  bridge_id?: string; // bridge that spawned this agent (empty for direct connections)
 }
 
 export interface ChannelRole {
@@ -135,6 +136,14 @@ export interface PollMessagesResponse {
   messages: Message[];
 }
 
+// --- Bridge types ---
+
+export interface BridgeInfo {
+  id: string;
+  agents: number;
+  hostname: string;
+}
+
 // --- WebSocket event types (broker → dashboard) ---
 
 export type WsEvent =
@@ -151,4 +160,7 @@ export type WsEvent =
   | { type: "file_deleted"; file_id: string; channel: string }
   | { type: "channel_aborted"; name: string }
   | { type: "channel_resumed"; name: string }
-  | { type: "snapshot"; peers: Peer[]; recent_messages: Message[]; channels: Channel[] };
+  | { type: "snapshot"; peers: Peer[]; recent_messages: Message[]; channels: Channel[]; bridges?: BridgeInfo[] }
+  | { type: "terminal_output"; session_id: string; data: string } // hex-encoded PTY output
+  | { type: "agent_exited"; session_id: string }
+  | { type: "bridge_update"; bridges: BridgeInfo[] };

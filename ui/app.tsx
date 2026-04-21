@@ -1,7 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createRoot } from "react-dom/client";
 import { marked } from "marked";
-import type { Peer, Message, Channel, ChannelRole, ChannelMemoryEntry, FileEntry, WsEvent } from "../shared/types.ts";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
+import type { Peer, Message, Channel, ChannelRole, ChannelMemoryEntry, FileEntry, WsEvent, BridgeInfo } from "../shared/types.ts";
 import { PRESET_ROLES } from "./roles.ts";
 
 // --- Helpers ---
@@ -901,6 +904,224 @@ function MessageBox({ messages, peers, newMessageKeys }: { messages: Message[]; 
   );
 }
 
+// --- Terminal helpers ---
+
+interface TerminalPanelState {
+  term: Terminal;
+  fit: FitAddon;
+  ro: ResizeObserver;
+  lastCols: number;
+  lastRows: number;
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
+  }
+  return bytes;
+}
+
+const XTERM_THEME = {
+  background: "#0d0f16",
+  foreground: "#c0caf5",
+  cursor: "#ff9e64",
+  cursorAccent: "#0d0f16",
+  selectionBackground: "#33467c",
+  black: "#15161e",
+  red: "#f7768e",
+  green: "#9ece6a",
+  yellow: "#e0af68",
+  blue: "#7aa2f7",
+  magenta: "#bb9af7",
+  cyan: "#7dcfff",
+  white: "#a9b1d6",
+  brightBlack: "#414868",
+  brightRed: "#f7768e",
+  brightGreen: "#9ece6a",
+  brightYellow: "#e0af68",
+  brightBlue: "#7aa2f7",
+  brightMagenta: "#bb9af7",
+  brightCyan: "#7dcfff",
+  brightWhite: "#c0caf5",
+};
+
+// --- Terminal Panel ---
+
+function TerminalPanel({ sessionId, name, ws, onClose, onTerminalReady, onRename }: {
+  sessionId: string;
+  name: string;
+  ws: WebSocket | null;
+  onClose: () => void;
+  onTerminalReady: (sessionId: string, term: Terminal, fit: FitAddon) => void;
+  onRename?: (sessionId: string, newName: string) => void;
+}) {
+  const termRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<TerminalPanelState | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState(name);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!termRef.current) return;
+
+    const term = new Terminal({
+      cursorBlink: true,
+      cursorStyle: "bar",
+      cursorWidth: 2,
+      fontSize: 15,
+      lineHeight: 1.2,
+      fontFamily: '"Cascadia Code", Consolas, "Courier New", monospace',
+      scrollback: 5000,
+      theme: XTERM_THEME,
+    });
+
+    try {
+      const unicode11 = new Unicode11Addon();
+      term.loadAddon(unicode11);
+      term.unicode.activeVersion = "11";
+    } catch {}
+
+    const fitAddon = new FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(termRef.current);
+    fitAddon.fit();
+
+    const state: TerminalPanelState = {
+      term,
+      fit: fitAddon,
+      ro: null as any,
+      lastCols: -1,
+      lastRows: -1,
+    };
+    panelRef.current = state;
+
+    // Notify parent that terminal is ready (so it can route output to it)
+    onTerminalReady(sessionId, term, fitAddon);
+
+    // Resize observer
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+    const ro = new ResizeObserver(() => {
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        try { fitAddon.fit(); } catch {}
+        sendResize();
+      }, 60);
+    });
+    ro.observe(termRef.current);
+    state.ro = ro;
+
+    // Terminal input → WS
+    term.onData((data) => {
+      if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: "terminal_input", session_id: sessionId, data }));
+      }
+    });
+
+    function sendResize() {
+      if (!panelRef.current) return;
+      const s = panelRef.current;
+      if (s.term.cols === s.lastCols && s.term.rows === s.lastRows) return;
+      if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: "terminal_resize", session_id: sessionId, cols: s.term.cols, rows: s.term.rows }));
+      }
+      s.lastCols = s.term.cols;
+      s.lastRows = s.term.rows;
+    }
+
+    sendResize();
+
+    return () => {
+      ro.disconnect();
+      term.dispose();
+    };
+  }, [sessionId]);
+
+  const startRename = () => {
+    setEditName(name);
+    setEditing(true);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
+  const finishRename = () => {
+    setEditing(false);
+    const trimmed = editName.trim();
+    if (trimmed && trimmed !== name && onRename) {
+      onRename(sessionId, trimmed);
+    }
+  };
+
+  return (
+    <div className="terminal-panel">
+      <div className="terminal-panel-header">
+        {editing ? (
+          <input
+            ref={inputRef}
+            className="terminal-panel-rename"
+            value={editName}
+            onChange={(e) => setEditName(e.target.value)}
+            onBlur={finishRename}
+            onKeyDown={(e) => { if (e.key === "Enter") finishRename(); if (e.key === "Escape") { setEditName(name); setEditing(false); } }}
+            maxLength={32}
+          />
+        ) : (
+          <span className="terminal-panel-name" onClick={startRename} title="Click to rename">{name}</span>
+        )}
+        <span className="terminal-panel-status">connected</span>
+        <button className="terminal-panel-close" onClick={onClose} title="Close terminal">&times;</button>
+      </div>
+      <div className="terminal-panel-term" ref={termRef} />
+    </div>
+  );
+}
+
+// --- Spawn Dialog ---
+
+function SpawnDialog({ bridges, onSpawn, onClose }: {
+  bridges: BridgeInfo[];
+  onSpawn: (bridgeId: string, cmd: string, args: string[]) => void;
+  onClose: () => void;
+}) {
+  const [bridgeId, setBridgeId] = useState(bridges[0]?.id ?? "");
+  const [cmd, setCmd] = useState("freecc");
+  const [args, setArgs] = useState("--dangerously-load-development-channels server:agent-hive");
+  const cmdRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { cmdRef.current?.focus(); cmdRef.current?.select(); }, []);
+
+  const handleSpawn = () => {
+    if (!cmd.trim()) return;
+    onSpawn(bridgeId, cmd.trim(), args.trim() ? args.trim().split(/\s+/) : []);
+    onClose();
+  };
+
+  return (
+    <div className="spawn-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="spawn-dialog">
+        <div className="spawn-title">New Session</div>
+        <label className="spawn-label">Bridge</label>
+        <select className="spawn-select" value={bridgeId} onChange={(e) => setBridgeId(e.target.value)}>
+          {bridges.map((b) => (
+            <option key={b.id} value={b.id}>
+              {b.hostname ? `${b.hostname} (${b.id})` : b.id} — {b.agents} agent{b.agents !== 1 ? "s" : ""}
+            </option>
+          ))}
+        </select>
+        <label className="spawn-label">Command</label>
+        <input ref={cmdRef} className="spawn-input" value={cmd} onChange={(e) => setCmd(e.target.value)}
+          placeholder="e.g. freecc, claude, cmd.exe, bash" onKeyDown={(e) => { if (e.key === "Enter") handleSpawn(); if (e.key === "Escape") onClose(); }} />
+        <label className="spawn-label">Arguments</label>
+        <input className="spawn-input" value={args} onChange={(e) => setArgs(e.target.value)}
+          placeholder="space-separated arguments (optional)" onKeyDown={(e) => { if (e.key === "Enter") handleSpawn(); if (e.key === "Escape") onClose(); }} />
+        <div className="spawn-actions">
+          <button className="spawn-cancel" onClick={onClose}>Cancel</button>
+          <button className="spawn-ok" onClick={handleSpawn}>Spawn</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // --- Dashboard ---
 
 function Dashboard({ masterToken }: { masterToken: string }) {
@@ -912,8 +1133,17 @@ function Dashboard({ masterToken }: { masterToken: string }) {
   const [selectedChannel, setSelectedChannel] = useState<string>("main");
   const [channelMemory, setChannelMemory] = useState<Record<string, ChannelMemoryEntry[]>>({});
   const [channelFiles, setChannelFiles] = useState<Record<string, FileEntry[]>>({});
+  const [bridges, setBridges] = useState<BridgeInfo[]>([]);
+  const [openTerminals, setOpenTerminals] = useState<Set<string>>(new Set());
+  const [showSpawnDialog, setShowSpawnDialog] = useState(false);
+  const [terminalNames, setTerminalNames] = useState<Record<string, string>>({});
   const wsRef = useRef<WebSocket | null>(null);
   const [, setTick] = useState(0); // force re-render for timeAgo
+
+  // Terminal output buffer — stores hex data for terminals not yet rendered
+  const outputBuffers = useRef<Record<string, string[]>>({});
+  // Terminal instances — maps session_id to { term, fit }
+  const terminalInstances = useRef<Record<string, { term: Terminal; fit: FitAddon }>>({});
 
   // Tick every 2s to update activity bubbles and relative timestamps
   useEffect(() => {
@@ -927,6 +1157,7 @@ function Dashboard({ masterToken }: { masterToken: string }) {
         setPeers(event.peers);
         setMessages(event.recent_messages);
         setChannels(event.channels ?? []);
+        setBridges(event.bridges ?? []);
         break;
       case "peer_pending":
       case "peer_joined":
@@ -934,6 +1165,14 @@ function Dashboard({ masterToken }: { masterToken: string }) {
           const filtered = prev.filter((p) => p.id !== event.peer.id);
           return [...filtered, event.peer];
         });
+        // Auto-open terminal for bridge-spawned agents
+        if (event.type === "peer_joined" && event.peer.bridge_id) {
+          setOpenTerminals((prev) => {
+            const next = new Set(prev);
+            next.add(event.peer.id);
+            return next;
+          });
+        }
         break;
       case "peer_updated":
         setPeers((prev) =>
@@ -1028,6 +1267,45 @@ function Dashboard({ masterToken }: { masterToken: string }) {
           ch.name === event.name ? { ...ch, aborted: false } : ch
         ));
         break;
+      case "terminal_output": {
+        const inst = terminalInstances.current[event.session_id];
+        if (inst?.term) {
+          // Flush any buffered output first
+          const buffered = outputBuffers.current[event.session_id];
+          if (buffered) {
+            for (const hex of buffered) {
+              try {
+                const bytes = hexToBytes(hex);
+                inst.term.write(new TextDecoder().decode(bytes));
+              } catch {}
+            }
+            delete outputBuffers.current[event.session_id];
+          }
+          try {
+            const bytes = hexToBytes(event.data);
+            inst.term.write(new TextDecoder().decode(bytes));
+          } catch {}
+        } else {
+          // Buffer until terminal panel is rendered
+          if (!outputBuffers.current[event.session_id]) outputBuffers.current[event.session_id] = [];
+          outputBuffers.current[event.session_id].push(event.data);
+        }
+        break;
+      }
+      case "agent_exited":
+        setOpenTerminals((prev) => {
+          const next = new Set(prev);
+          next.delete(event.session_id);
+          return next;
+        });
+        // Clean up terminal instance
+        const exitedInst = terminalInstances.current[event.session_id];
+        if (exitedInst) { exitedInst.term.dispose(); delete terminalInstances.current[event.session_id]; }
+        delete outputBuffers.current[event.session_id];
+        break;
+      case "bridge_update":
+        setBridges(event.bridges ?? []);
+        break;
     }
   }, []);
 
@@ -1099,6 +1377,47 @@ function Dashboard({ masterToken }: { masterToken: string }) {
     } catch {}
   }, [masterToken]);
 
+  const handleSpawn = useCallback((bridgeId: string, cmd: string, args: string[]) => {
+    if (wsRef.current && wsRef.current.readyState === 1) {
+      wsRef.current.send(JSON.stringify({ type: "spawn_agent", bridge_id: bridgeId, cmd, args }));
+    }
+  }, []);
+
+  const handleKillTerminal = useCallback((sessionId: string) => {
+    if (wsRef.current && wsRef.current.readyState === 1) {
+      wsRef.current.send(JSON.stringify({ type: "kill_agent", session_id: sessionId }));
+    }
+    // Clean up locally
+    const inst = terminalInstances.current[sessionId];
+    if (inst) { delete terminalInstances.current[sessionId]; }
+    delete outputBuffers.current[sessionId];
+    setTerminalNames((prev) => { const next = { ...prev }; delete next[sessionId]; return next; });
+    setOpenTerminals((prev) => {
+      const next = new Set(prev);
+      next.delete(sessionId);
+      return next;
+    });
+  }, []);
+
+  const handleTerminalReady = useCallback((sessionId: string, term: Terminal, fit: FitAddon) => {
+    terminalInstances.current[sessionId] = { term, fit };
+    // Flush any buffered output
+    const buffered = outputBuffers.current[sessionId];
+    if (buffered) {
+      for (const hex of buffered) {
+        try {
+          const bytes = hexToBytes(hex);
+          term.write(new TextDecoder().decode(bytes));
+        } catch {}
+      }
+      delete outputBuffers.current[sessionId];
+    }
+  }, []);
+
+  const handleRenameTerminal = useCallback((sessionId: string, newName: string) => {
+    setTerminalNames((prev) => ({ ...prev, [sessionId]: newName }));
+  }, []);
+
   useEffect(() => { loadFiles(selectedChannel); loadMemory(selectedChannel); }, [selectedChannel, loadFiles, loadMemory]);
 
   const pendingPeers = peers.filter((p) => p.status === "pending");
@@ -1143,6 +1462,33 @@ function Dashboard({ masterToken }: { masterToken: string }) {
           Agent Hive
         </div>
         <ChannelPanel channels={channels} masterToken={masterToken} selectedChannel={selectedChannel} onSelectChannel={setSelectedChannel} />
+
+        {/* Terminals list */}
+        <div className="sidebar-section">
+          <div className="sidebar-section-header">
+            Terminals
+            <span className="count">{openTerminals.size}</span>
+            {bridges.length > 0 && (
+              <button className="btn-spawn-sm" onClick={() => setShowSpawnDialog(true)} title="New Session">+</button>
+            )}
+          </div>
+          {openTerminals.size === 0 ? (
+            <div className="sidebar-empty">No active terminals</div>
+          ) : (
+            <div className="sidebar-terminals">
+              {Array.from(openTerminals).map((sessionId) => {
+                const peer = peers.find((p) => p.id === sessionId);
+                return (
+                  <div key={sessionId} className="sidebar-terminal-item">
+                    <span className="sidebar-terminal-dot" />
+                    <span className="sidebar-terminal-name">{terminalNames[sessionId] ?? peer?.name ?? sessionId}</span>
+                    <button className="sidebar-terminal-kill" onClick={() => handleKillTerminal(sessionId)} title="Kill">&times;</button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </aside>
 
       {/* Main */}
@@ -1167,6 +1513,9 @@ function Dashboard({ masterToken }: { masterToken: string }) {
               <button className="btn btn-force-stop" onClick={handleForceStop} title="Force all workers to stop">⛔ Stop</button>
             )}
             <button className="btn btn-reset" onClick={handleReset} title="Clear memory, messages, and notify all agents to start fresh">🔄 Reset</button>
+            {bridges.length > 0 && (
+              <button className="btn btn-spawn" onClick={() => setShowSpawnDialog(true)} title="Spawn a new agent on a bridge">+ New Session</button>
+            )}
           </div>
         </header>
 
@@ -1185,51 +1534,114 @@ function Dashboard({ masterToken }: { masterToken: string }) {
           </div>
         )}
 
-        {/* Active peers — filtered to selected channel */}
-        <div className="section">
-          <div className="section-header">
-            <span>Active Peers</span>
-            <span className="channel-badge" style={{ marginLeft: 4 }}>#{selectedChannel}</span>
-            <span className="count">{channelOnline.length}</span>
-            {channelOffline.length > 0 && <span className="count" style={{ opacity: 0.45 }}>{channelOffline.length} offline</span>}
-          </div>
-          {channelPeers.length === 0 ? (
-            <div className="empty">No peers in #{selectedChannel}.</div>
-          ) : (
-            <div className="peer-avatar-grid">
-              {channelPeers.map((p) => <PeerAvatarItem key={p.id} peer={p} />)}
+        {/* Content split: top row (messages + info) / terminals bottom */}
+        <div className="content-split" ref={(el) => {
+          if (el) {
+            if (!el.style.getPropertyValue("--top-height")) {
+              el.style.setProperty("--top-height", "33%");
+            }
+          }
+        }}>
+          {/* Top row: Messages (left) + Info panel (right) */}
+          <div className="top-row">
+            {/* Messages panel */}
+            <div className="section section-messages">
+              <div className="section-header">
+                Messages
+                <span className="count">{messages.filter(m => !m.channel || m.channel === selectedChannel).length}</span>
+                <button className="btn-icon" style={{ marginLeft: "auto" }} onClick={clearMessages} title="Clear all messages">✕</button>
+              </div>
+              <MessageBox messages={messages.filter(m => !m.channel || m.channel === selectedChannel)} peers={peers} newMessageKeys={newMessageKeys} />
             </div>
-          )}
+
+            {/* Info panel — Memory (top) + Files (bottom) */}
+            <div className="info-panel">
+              <div className="info-section">
+                <div className="info-section-header">
+                  Memory
+                  <span className="count">{(channelMemory[selectedChannel] ?? []).length}</span>
+                </div>
+                <MemoryPanel memory={channelMemory[selectedChannel] ?? []} masterToken={masterToken} channel={selectedChannel} />
+              </div>
+              <div className="info-section">
+                <div className="info-section-header">
+                  Files
+                  <span className="count">{(channelFiles[selectedChannel] ?? []).length}</span>
+                </div>
+                <FileList files={channelFiles[selectedChannel] ?? []} masterToken={masterToken} channel={selectedChannel} peers={peers} />
+              </div>
+            </div>
+          </div>
+
+          {/* Resize handle */}
+          <div className="resize-handle-h"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              const split = (e.target as HTMLElement).parentElement!;
+              const startY = e.clientY;
+              const startHeight = split.querySelector(".top-row")!.getBoundingClientRect().height;
+              const totalHeight = split.getBoundingClientRect().height;
+
+              const onMove = (ev: MouseEvent) => {
+                const delta = ev.clientY - startY;
+                const pct = ((startHeight + delta) / totalHeight) * 100;
+                const clamped = Math.max(10, Math.min(80, pct));
+                split.style.setProperty("--top-height", `${clamped}%`);
+                requestAnimationFrame(() => {
+                  for (const id of openTerminals) {
+                    const inst = terminalInstances.current[id];
+                    if (inst) { try { inst.fit.fit(); } catch {} }
+                  }
+                });
+              };
+              const onUp = () => {
+                document.removeEventListener("mousemove", onMove);
+                document.removeEventListener("mouseup", onUp);
+              };
+              document.addEventListener("mousemove", onMove);
+              document.addEventListener("mouseup", onUp);
+            }}
+          />
+
+          {/* Terminal area — full width */}
+          <div className="section section-terminals">
+            <div className="section-header">
+              Terminals
+              <span className="count">{openTerminals.size}</span>
+            </div>
+            <div className="terminal-area">
+              {openTerminals.size === 0 ? (
+                <div className="empty">No active terminals. Click + New Session to spawn an agent.</div>
+              ) : (
+                Array.from(openTerminals).map((sessionId) => {
+                  const peer = peers.find((p) => p.id === sessionId);
+                  return (
+                    <TerminalPanel
+                      key={sessionId}
+                      sessionId={sessionId}
+                      name={terminalNames[sessionId] ?? peer?.name ?? sessionId}
+                      ws={wsRef.current}
+                      onClose={() => handleKillTerminal(sessionId)}
+                      onTerminalReady={handleTerminalReady}
+                      onRename={handleRenameTerminal}
+                    />
+                  );
+                })
+              )}
+            </div>
+          </div>
         </div>
 
-        {/* Messages panel */}
-        <div className="section section-messages">
-          <div className="section-header">
-            Messages
-            <span className="count">{messages.filter(m => !m.channel || m.channel === selectedChannel).length}</span>
-            <button className="btn-icon" style={{ marginLeft: "auto" }} onClick={clearMessages} title="Clear all messages">✕</button>
-          </div>
-          <MessageBox messages={messages.filter(m => !m.channel || m.channel === selectedChannel)} peers={peers} newMessageKeys={newMessageKeys} />
-        </div>
+        {/* Spawn dialog */}
+        {showSpawnDialog && (
+          <SpawnDialog
+            bridges={bridges}
+            onSpawn={handleSpawn}
+            onClose={() => setShowSpawnDialog(false)}
+          />
+        )}
       </div>
 
-      {/* Right panel — Memory (top) + Files (bottom) always visible */}
-      <div className="right-panel">
-        <div className="right-section">
-          <div className="right-section-header">
-            Memory
-            <span className="count">{(channelMemory[selectedChannel] ?? []).length}</span>
-          </div>
-          <MemoryPanel memory={channelMemory[selectedChannel] ?? []} masterToken={masterToken} channel={selectedChannel} />
-        </div>
-        <div className="right-section">
-          <div className="right-section-header">
-            Files
-            <span className="count">{(channelFiles[selectedChannel] ?? []).length}</span>
-          </div>
-          <FileList files={channelFiles[selectedChannel] ?? []} masterToken={masterToken} channel={selectedChannel} peers={peers} />
-        </div>
-      </div>
     </div>
   );
 }

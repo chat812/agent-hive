@@ -28,6 +28,7 @@ import type {
   Channel,
   WsEvent,
   FileEntry,
+  BridgeInfo,
 } from "./shared/types.ts";
 import {
   loadOrCreateMasterKey,
@@ -208,6 +209,7 @@ try { db.run("ALTER TABLE files ADD COLUMN version INTEGER NOT NULL DEFAULT 1");
 try { db.run("ALTER TABLE files ADD COLUMN sha256 TEXT NOT NULL DEFAULT ''"); } catch {}
 try { db.run("ALTER TABLE peers ADD COLUMN tokens_in INTEGER NOT NULL DEFAULT 0"); } catch {}
 try { db.run("ALTER TABLE peers ADD COLUMN tokens_out INTEGER NOT NULL DEFAULT 0"); } catch {}
+try { db.run("ALTER TABLE peers ADD COLUMN bridge_id TEXT NOT NULL DEFAULT ''"); } catch {}
 db.run("UPDATE files SET path = filename WHERE path = ''");
 
 // --- WebSocket clients (dashboard) ---
@@ -230,6 +232,10 @@ function broadcast(event: WsEvent) {
 
 const wsAgents = new Map<string, any>(); // peerId → ServerWebSocket
 
+// --- WebSocket bridge connections ---
+
+const wsBridges = new Map<string, any>(); // bridgeId → ServerWebSocket
+
 function pushToAgent(peerId: string, event: object): boolean {
   const ws = wsAgents.get(peerId);
   if (!ws) return false;
@@ -242,6 +248,29 @@ function pushToAgent(peerId: string, event: object): boolean {
   }
 }
 
+function sendToBridge(bridgeId: string, event: object): boolean {
+  const ws = wsBridges.get(bridgeId);
+  if (!ws) return false;
+  try {
+    ws.send(JSON.stringify(event));
+    return true;
+  } catch {
+    wsBridges.delete(bridgeId);
+    return false;
+  }
+}
+
+function getBridgeList(): BridgeInfo[] {
+  const list: BridgeInfo[] = [];
+  for (const [bid, ws] of wsBridges) {
+    try { ws.ping(); } catch { wsBridges.delete(bid); continue; }
+    const peers = (selectAllPeersAny.all() as Peer[]).filter(p => p.bridge_id === bid && p.status === "approved");
+    const hostname = peers[0]?.hostname ?? "";
+    list.push({ id: bid, agents: peers.length, hostname });
+  }
+  return list;
+}
+
 // Ping agents every 5s to detect dead connections
 setInterval(() => {
   for (const [peerId, ws] of wsAgents) {
@@ -249,6 +278,21 @@ setInterval(() => {
       ws.ping();
     } catch {
       wsAgents.delete(peerId);
+    }
+  }
+}, 5_000);
+
+// Ping bridges every 5s to detect dead connections and keep agents alive
+setInterval(() => {
+  for (const [bridgeId, ws] of wsBridges) {
+    try {
+      ws.ping();
+      // Keep bridge agents alive — update last_seen for all peers on this bridge
+      const now = new Date().toISOString();
+      db.run("UPDATE peers SET last_seen = ? WHERE bridge_id = ? AND status = 'approved'", [now, bridgeId]);
+    } catch {
+      wsBridges.delete(bridgeId);
+      broadcast({ type: "bridge_update", bridges: getBridgeList() });
     }
   }
 }, 5_000);
@@ -820,6 +864,10 @@ Bun.serve({
       if (path === "/app.css") {
         return new Response(Bun.file(`${UI_DIR}/app.css`), { headers: { "Content-Type": "text/css; charset=utf-8" } });
       }
+      if (path === "/xterm.css") {
+        const xtermCss = `${import.meta.dir}/node_modules/@xterm/xterm/css/xterm.css`;
+        return new Response(Bun.file(xtermCss), { headers: { "Content-Type": "text/css; charset=utf-8" } });
+      }
       if (path === "/health") {
         return Response.json({ status: "ok", peers: (selectAllPeers.all() as Peer[]).length });
       }
@@ -857,6 +905,18 @@ Bun.serve({
         if (!agentP || agentP.status !== "approved") return new Response("Unauthorized", { status: 401 });
 
         const upgraded = server.upgrade(req, { data: { type: "agent", peerId, name: agentP.name } });
+        if (upgraded) return new Response(null, { status: 101 });
+        return new Response("WebSocket upgrade failed", { status: 500 });
+      }
+
+      // WebSocket upgrade for bridges
+      if (path === "/ws/bridge") {
+        const token = url.searchParams.get("token");
+        if (token !== MASTER_KEY) {
+          return new Response("Unauthorized", { status: 401 });
+        }
+        const bridgeId = url.searchParams.get("bridge_id") || generateId();
+        const upgraded = server.upgrade(req, { data: { type: "bridge", bridgeId } });
         if (upgraded) return new Response(null, { status: 101 });
         return new Response("WebSocket upgrade failed", { status: 500 });
       }
@@ -911,6 +971,14 @@ Bun.serve({
         return Response.json({ error: "Master key required" }, { status: 403 });
       }
       return Response.json(selectAllPeersAny.all());
+    }
+
+    // List connected bridges — admin only
+    if (path === "/admin/bridges") {
+      if (!isMasterKey(authHeader)) {
+        return Response.json({ error: "Master key required" }, { status: 403 });
+      }
+      return Response.json(getBridgeList());
     }
 
     // Recent messages — admin only
@@ -1162,23 +1230,139 @@ case "/set-role": {
         if (existing) { try { existing.close(); } catch {} }
         wsAgents.set(peerId, ws);
         console.error(`[broker] Agent WS connected: ${peerId} (${name})`);
+      } else if (ws.data?.type === "bridge") {
+        const { bridgeId } = ws.data;
+        // Close any existing WS connection for this bridge
+        const existing = wsBridges.get(bridgeId);
+        if (existing) { try { existing.close(); } catch {} }
+        wsBridges.set(bridgeId, ws);
+        console.error(`[broker] Bridge WS connected: ${bridgeId}`);
+        broadcast({ type: "bridge_update", bridges: getBridgeList() });
       } else {
         wsClients.add(ws);
         // Send current state snapshot to dashboard
         const peers = selectAllPeersAny.all() as Peer[];
         const recent_messages = selectRecentMessages.all() as Message[];
         const channels = getChannelsWithPeers();
-        ws.send(JSON.stringify({ type: "snapshot", peers, recent_messages, channels } satisfies WsEvent));
+        const bridges = getBridgeList();
+        ws.send(JSON.stringify({ type: "snapshot", peers, recent_messages, channels, bridges } satisfies WsEvent));
       }
     },
-    message(_ws: any, _message: any) {
-      // Neither dashboard nor agents send messages via WS (both use REST)
+    message(ws: any, message: any) {
+      const data = ws.data;
+      if (!data) return;
+
+      // --- Dashboard inbound messages ---
+      if (data.type === "dashboard") {
+        try {
+          const payload = JSON.parse(message as string);
+
+          // Terminal input from dashboard → route to bridge
+          if (payload.type === "terminal_input" && payload.session_id) {
+            const peer = selectPeerById.get(payload.session_id) as Peer | null;
+            if (peer?.bridge_id) {
+              sendToBridge(peer.bridge_id, { type: "terminal_input", session_id: payload.session_id, data: payload.data });
+            }
+          }
+
+          // Terminal resize from dashboard → route to bridge
+          if (payload.type === "terminal_resize" && payload.session_id) {
+            const peer = selectPeerById.get(payload.session_id) as Peer | null;
+            if (peer?.bridge_id) {
+              sendToBridge(peer.bridge_id, { type: "terminal_resize", session_id: payload.session_id, cols: payload.cols, rows: payload.rows });
+            }
+          }
+
+          // Spawn agent on bridge
+          if (payload.type === "spawn_agent" && payload.cmd && payload.bridge_id) {
+            sendToBridge(payload.bridge_id, { type: "spawn_agent", cmd: payload.cmd, args: payload.args || [] });
+          }
+
+          // Kill agent on bridge
+          if (payload.type === "kill_agent" && payload.session_id) {
+            const peer = selectPeerById.get(payload.session_id) as Peer | null;
+            if (peer?.bridge_id) {
+              sendToBridge(peer.bridge_id, { type: "kill_agent", session_id: payload.session_id });
+            }
+            db.run("DELETE FROM peers WHERE id = ?", [payload.session_id]);
+          }
+        } catch {}
+        return;
+      }
+
+      // --- Bridge inbound messages ---
+      if (data.type === "bridge") {
+        try {
+          const payload = JSON.parse(message as string);
+          const bridgeId = data.bridgeId;
+
+          // Agent registration from bridge — auto-approve
+          if (payload.type === "register") {
+            const id = payload.id || generateId();
+            const sessionToken = generateToken(32);
+            const now = new Date().toISOString();
+            const peerName = payload.name || `agent-${id.slice(0, 4)}`;
+
+            // Remove any existing registration for same PID+hostname
+            if (payload.pid && payload.hostname) {
+              const existingByPid = db
+                .query("SELECT id FROM peers WHERE pid = ? AND hostname = ?")
+                .get(payload.pid, payload.hostname) as { id: string } | null;
+              if (existingByPid) removePeer(existingByPid.id);
+            }
+
+            try {
+              insertPeer.run(
+                id, peerName, payload.pid || 0, "", null, null,
+                payload.harness || "claude-code", payload.hostname || "",
+                "", now, now
+              );
+              db.run("UPDATE peers SET bridge_id = ?, status = 'approved' WHERE id = ?", [bridgeId, id]);
+              insertToken.run(sessionToken, id, now);
+            } catch (err: any) {
+              console.error(`[broker] Bridge register error: ${err.message}`);
+              return;
+            }
+
+            const peer = { ...selectPeerById.get(id), bridge_id: bridgeId } as Peer;
+            broadcast({ type: "peer_joined", peer });
+            console.error(`[broker] Bridge agent registered: ${peerName} (${id}) on bridge ${bridgeId}`);
+            return;
+          }
+
+          // Terminal output from bridge → broadcast to dashboards
+          if (payload.type === "terminal_output" && payload.session_id) {
+            broadcast({ type: "terminal_output", session_id: payload.session_id, data: payload.data });
+            return;
+          }
+
+          // Agent exited (PTY closed)
+          if (payload.type === "agent_exited" && payload.session_id) {
+            removePeer(payload.session_id);
+            broadcast({ type: "agent_exited", session_id: payload.session_id });
+            console.error(`[broker] Bridge agent exited: ${payload.session_id}`);
+            return;
+          }
+        } catch {}
+        return;
+      }
     },
     close(ws: any) {
       if (ws.data?.type === "agent") {
         const { peerId, name } = ws.data;
         wsAgents.delete(peerId);
         console.error(`[broker] Agent WS disconnected: ${peerId} (${name})`);
+      } else if (ws.data?.type === "bridge") {
+        const { bridgeId } = ws.data;
+        wsBridges.delete(bridgeId);
+        console.error(`[broker] Bridge WS disconnected: ${bridgeId}`);
+        // Remove all agents belonging to this bridge
+        const bridgeAgents = (selectAllPeersAny.all() as Peer[]).filter(p => p.bridge_id === bridgeId);
+        for (const agent of bridgeAgents) {
+          removePeer(agent.id);
+          broadcast({ type: "agent_exited", session_id: agent.id });
+        }
+        broadcast({ type: "bridge_update", bridges: getBridgeList() });
       } else {
         wsClients.delete(ws);
       }

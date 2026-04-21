@@ -10,14 +10,15 @@ Multi-agent coordination network for AI coding instances (Claude Code, Codex, Op
 
 ## Architecture
 
-- `broker.ts` — HTTP + WebSocket server on 0.0.0.0:7899 + SQLite. Serves the web dashboard. Approval-based auth. Auto-builds UI bundle on startup.
+- `broker.ts` — HTTP + WebSocket server on 0.0.0.0:7899 + SQLite. Serves the web dashboard. Approval-based auth. Auto-builds UI bundle on startup. Routes terminal I/O between bridges and dashboards.
 - `server.ts` — TypeScript MCP stdio server, one per AI coding instance. Connects to broker via WebSocket (HTTP fallback), exposes tools, pushes channel notifications.
 - `../coworker/src/main.rs` — Rust MCP stdio server. Functionally identical to server.ts but compiles to a ~3 MB binary. Primary server for `.mcp.json`. Includes idle/stall detection and `report_issue` tool.
+- `bridge/` — Rust binary (one per machine). Spawns agent processes with PTYs, multiplexes terminal I/O over a single WebSocket to the broker. Also runs a local HTTP gateway for coworker MCP servers.
 - `shared/types.ts` — Shared TypeScript types for broker API, dashboard WebSocket events, and agent WebSocket events.
 - `shared/auth.ts` — Token generation, master key management.
 - `shared/summarize.ts` — Auto-summary generation via OpenAI.
 - `ui/roles.ts` — Role prompt definitions (Master, Worker, Executor, Vuln Researcher, Vuln Validator, Sys Admin, Advisor).
-- `ui/app.tsx` — React web dashboard (role assignment, channel management, peer cards, message log with pagination, memory browser).
+- `ui/app.tsx` — React web dashboard (role assignment, channel management, peer cards, message log with pagination, memory browser, xterm.js terminal panels).
 - `ui/app.css` — Dashboard styles.
 - `cli.ts` — CLI utility for inspecting broker state and managing auth.
 
@@ -27,6 +28,12 @@ Agents connect to the broker using a hybrid model:
 - **WebSocket** (`/ws/agent?token=...`) — primary transport for instant push (messages, role changes, abort signals). Heartbeat ping every 5s.
 - **HTTP** — fallback polling every 1s + heartbeat every 2s when WS is down. All tool calls (send_message, list_peers, memory_set, etc.) always use HTTP.
 - Auto-reconnect with exponential backoff (1s → 30s cap).
+
+Bridges connect via:
+- **WebSocket** (`/ws/bridge?token=MASTER_KEY&bridge_id=...`) — multiplexed transport for terminal I/O, agent registration, and spawn/kill commands. Ping every 5s keeps bridge agents alive.
+- **Local HTTP gateway** (port 17900) — relays coworker API calls to the broker via the bridge WebSocket.
+
+Dashboard receives terminal data via the main `/ws` WebSocket. Terminal input/resize/spawn/kill are sent as JSON messages over the same connection.
 
 ## Roles
 
@@ -45,6 +52,11 @@ Key protocols: ACK on every request, channel isolation via `list_peers(scope: "c
 ```bash
 # Start the broker (generates master key on first run, auto-builds UI):
 bun broker.ts
+
+# Start the bridge (connects to broker, spawns agents with PTYs):
+cd bridge && cargo run --release
+# Or set env vars:
+# HIVE_HOST=http://127.0.0.1:7899 AGENT_HIVE_TOKEN=<key> cargo run --release
 
 # Start Claude Code with the channel flag:
 claude --dangerously-load-development-channels server:agent-hive

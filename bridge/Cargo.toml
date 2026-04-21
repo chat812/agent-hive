@@ -1,0 +1,18 @@
+[package]
+name = "agent-hive-bridge"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+futures-util = "0.3"
+portable-pty = "0.8"
+serde_json = "1"
+hex = "0.4"
+uuid = { version = "1", features = ["v4"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+hostname = "0.4"
+anyhow = "1"
