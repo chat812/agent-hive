@@ -1177,6 +1177,13 @@ function Dashboard({ masterToken }: { masterToken: string }) {
           .map((p: Peer) => p.id);
         if (terminalIds.length > 0) {
           setOpenTerminals(new Set(terminalIds));
+          // Buffer terminal history for replay when xterm instances mount
+          const history = (event as any).terminal_history as Record<string, string[]> | undefined;
+          if (history) {
+            for (const [id, chunks] of Object.entries(history)) {
+              outputBuffers.current[id] = [...chunks];
+            }
+          }
         }
         break;
       case "peer_pending":

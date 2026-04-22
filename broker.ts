@@ -248,6 +248,10 @@ const wsAgents = new Map<string, any>(); // peerId → ServerWebSocket
 const wsLandlords = new Map<string, any>(); // landlordId → ServerWebSocket (approved)
 const wsPendingLandlords = new Map<string, any>(); // landlordId → ServerWebSocket (pending approval)
 
+// Terminal output buffer — stores recent output per session for dashboard reconnect
+const terminalBuffers = new Map<string, string[]>(); // sessionId → hex-encoded chunks (last 500)
+const TERMINAL_BUFFER_MAX = 500;
+
 function pushToAgent(peerId: string, event: object): boolean {
   const ws = wsAgents.get(peerId);
   if (!ws) return false;
@@ -1364,7 +1368,16 @@ case "/set-role": {
         const channels = getChannelsWithPeers();
         const landlords = getLandlordList();
         const pendingLandlords = getPendingLandlordList();
-        ws.send(JSON.stringify({ type: "snapshot", peers, recent_messages, channels, landlords, pending_landlords: pendingLandlords } satisfies WsEvent));
+        // Build terminal history from buffers
+        const terminal_history: Record<string, string[]> = {};
+        for (const peer of peers as Peer[]) {
+          if (peer.bridge_id && peer.bridge_id !== "") {
+            const buf = terminalBuffers.get(peer.id);
+            if (buf && buf.length > 0) terminal_history[peer.id] = buf;
+          }
+        }
+
+        ws.send(JSON.stringify({ type: "snapshot", peers, recent_messages, channels, landlords, pending_landlords: pendingLandlords, terminal_history } satisfies WsEvent));
       }
     },
     message(ws: any, message: any) {
@@ -1451,14 +1464,20 @@ case "/set-role": {
             return;
           }
 
-          // Terminal output from bridge → broadcast to dashboards
+          // Terminal output from bridge → buffer + broadcast to dashboards
           if (payload.type === "terminal_output" && payload.session_id) {
+            // Buffer for dashboard reconnects
+            let buf = terminalBuffers.get(payload.session_id);
+            if (!buf) { buf = []; terminalBuffers.set(payload.session_id, buf); }
+            buf.push(payload.data);
+            if (buf.length > TERMINAL_BUFFER_MAX) buf.splice(0, buf.length - TERMINAL_BUFFER_MAX);
             broadcast({ type: "terminal_output", session_id: payload.session_id, data: payload.data });
             return;
           }
 
           // Agent exited (PTY closed)
           if (payload.type === "agent_exited" && payload.session_id) {
+            terminalBuffers.delete(payload.session_id);
             removePeer(payload.session_id);
             broadcast({ type: "agent_exited", session_id: payload.session_id });
             console.error(`[broker] Landlord agent exited: ${payload.session_id}`);

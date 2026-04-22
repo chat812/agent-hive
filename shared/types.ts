@@ -161,7 +161,7 @@ export type WsEvent =
   | { type: "file_deleted"; file_id: string; channel: string }
   | { type: "channel_aborted"; name: string }
   | { type: "channel_resumed"; name: string }
-  | { type: "snapshot"; peers: Peer[]; recent_messages: Message[]; channels: Channel[]; landlords?: LandlordInfo[]; pending_landlords?: LandlordInfo[] }
+  | { type: "snapshot"; peers: Peer[]; recent_messages: Message[]; channels: Channel[]; landlords?: LandlordInfo[]; pending_landlords?: LandlordInfo[]; terminal_history?: Record<string, string[]> }
   | { type: "terminal_output"; session_id: string; data: string } // hex-encoded PTY output
   | { type: "agent_exited"; session_id: string }
   | { type: "landlord_update"; landlords: LandlordInfo[] }

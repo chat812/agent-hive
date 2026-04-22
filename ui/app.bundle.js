@@ -31466,6 +31466,12 @@ function Dashboard({ masterToken }) {
         const terminalIds = event.peers.filter((p) => p.bridge_id && p.bridge_id !== "" && p.status === "approved").map((p) => p.id);
         if (terminalIds.length > 0) {
           setOpenTerminals(new Set(terminalIds));
+          const history = event.terminal_history;
+          if (history) {
+            for (const [id, chunks] of Object.entries(history)) {
+              outputBuffers.current[id] = [...chunks];
+            }
+          }
         }
         break;
       case "peer_pending":
