@@ -87,10 +87,13 @@ impl AgentProcess {
     }
 
     pub fn kill(&mut self) -> Result<()> {
+        // Send Ctrl+C (gentle termination via PTY)
         if let Some(ref mut writer) = self.pty_writer {
             let _ = writer.write_all(b"\x03");
             let _ = writer.flush();
         }
+        // Close PTY master to force SIGHUP on child if Ctrl+C is ignored
+        self.pty_writer = None;
         Ok(())
     }
 

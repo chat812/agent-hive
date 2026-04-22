@@ -50,6 +50,22 @@ const FILES_DIR = process.env.AGENT_HIVE_FILES_DIR ??
   `${process.env.HOME ?? process.env.USERPROFILE}/.agent-hive-files`;
 mkdirSync(FILES_DIR, { recursive: true });
 
+// --- Security headers ---
+
+const SECURITY_HEADERS: Record<string, string> = {
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:; font-src 'self'",
+};
+
+function withSecurityHeaders(res: Response): Response {
+  if (res.status === 101) return res;
+  const h = new Headers(res.headers);
+  for (const [k, v] of Object.entries(SECURITY_HEADERS)) h.set(k, v);
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h });
+}
+
 // --- Master key ---
 
 const MASTER_KEY = await loadOrCreateMasterKey();
@@ -69,7 +85,7 @@ db.run(`
   )
 `);
 
-db.run(`INSERT OR IGNORE INTO channels (name, created_at) VALUES ('main', '${new Date().toISOString()}')`);
+insertChannel.run("main", new Date().toISOString());
 
 db.run(`
   CREATE TABLE IF NOT EXISTS peer_last_channel (
@@ -422,9 +438,11 @@ setInterval(cleanStalePeers, 30_000);
 
 function generateId(): string {
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
   let id = "";
   for (let i = 0; i < 8; i++) {
-    id += chars[Math.floor(Math.random() * chars.length)];
+    id += chars[bytes[i] % chars.length];
   }
   return id;
 }
@@ -871,6 +889,7 @@ Bun.serve({
   hostname: HOST,
 
   async fetch(req, server) {
+    const res = await (async () => {
     const url = new URL(req.url);
     const path = url.pathname;
 
@@ -1331,6 +1350,8 @@ case "/set-role": {
       const msg = e instanceof Error ? e.message : String(e);
       return Response.json({ error: msg }, { status: 500 });
     }
+    })();
+    return withSecurityHeaders(res);
   },
 
   websocket: {
