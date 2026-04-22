@@ -10,10 +10,10 @@ Multi-agent coordination network for AI coding instances (Claude Code, Codex, Op
 
 ## Architecture
 
-- `broker.ts` — HTTP + WebSocket server on 0.0.0.0:7899 + SQLite. Serves the web dashboard. Approval-based auth. Auto-builds UI bundle on startup. Routes terminal I/O between bridges and dashboards.
+- `broker.ts` — HTTP + WebSocket server on 0.0.0.0:7899 + SQLite. Serves the web dashboard. Approval-based auth. Auto-builds UI bundle on startup. Routes terminal I/O between landlords and dashboards.
 - `server.ts` — TypeScript MCP stdio server, one per AI coding instance. Connects to broker via WebSocket (HTTP fallback), exposes tools, pushes channel notifications.
-- `../coworker/src/main.rs` — Rust MCP stdio server. Functionally identical to server.ts but compiles to a ~3 MB binary. Primary server for `.mcp.json`. Includes idle/stall detection and `report_issue` tool.
-- `bridge/` — Rust binary (one per machine). Spawns agent processes with PTYs, multiplexes terminal I/O over a single WebSocket to the broker. Also runs a local HTTP gateway for coworker MCP servers.
+- `coworker/src/main.rs` — Rust MCP stdio server. Functionally identical to server.ts but compiles to a ~3 MB binary. Primary server for `.mcp.json`. Includes idle/stall detection and `report_issue` tool.
+- `bridge/` — Rust binary (one per machine, now called agent-hive-landlord). Spawns agent processes with PTYs, multiplexes terminal I/O over a single WebSocket to the broker. Also runs a local HTTP gateway for coworker MCP servers.
 - `shared/types.ts` — Shared TypeScript types for broker API, dashboard WebSocket events, and agent WebSocket events.
 - `shared/auth.ts` — Token generation, master key management.
 - `shared/summarize.ts` — Auto-summary generation via OpenAI.
@@ -29,9 +29,9 @@ Agents connect to the broker using a hybrid model:
 - **HTTP** — fallback polling every 1s + heartbeat every 2s when WS is down. All tool calls (send_message, list_peers, memory_set, etc.) always use HTTP.
 - Auto-reconnect with exponential backoff (1s → 30s cap).
 
-Bridges connect via:
-- **WebSocket** (`/ws/bridge?token=MASTER_KEY&bridge_id=...`) — multiplexed transport for terminal I/O, agent registration, and spawn/kill commands. Ping every 5s keeps bridge agents alive.
-- **Local HTTP gateway** (port 17900) — relays coworker API calls to the broker via the bridge WebSocket.
+Landlords connect via:
+- **WebSocket** (`/ws/landlord?token=MASTER_KEY&bridge_id=...`) — multiplexed transport for terminal I/O, agent registration, and spawn/kill commands. Ping every 5s keeps landlord agents alive.
+- **Local HTTP gateway** (port 17900) — relays coworker API calls to the broker via the landlord WebSocket.
 
 Dashboard receives terminal data via the main `/ws` WebSocket. Terminal input/resize/spawn/kill are sent as JSON messages over the same connection.
 
@@ -53,18 +53,20 @@ Key protocols: ACK on every request, channel isolation via `list_peers(scope: "c
 # Start the broker (generates master key on first run, auto-builds UI):
 bun broker.ts
 
-# Start the bridge (connects to broker, spawns agents with PTYs):
+# Start the landlord (connects to broker, spawns agents with PTYs):
 cd bridge && cargo run --release
 # Or set env vars:
 # HIVE_HOST=http://127.0.0.1:7899 AGENT_HIVE_TOKEN=<key> cargo run --release
+# The landlord auto-detects the coworker binary and auto-configures the MCP
+# server globally in ~/.claude.json. No manual .mcp.json setup needed.
 
 # Start Claude Code with the channel flag:
 claude --dangerously-load-development-channels server:agent-hive
 
-# .mcp.json (Rust binary, recommended):
+# .mcp.json (Rust binary, manual — not needed if landlord auto-configured):
 # { "mcpServers": { "agent-hive": { "command": "/path/to/coworker" } } }
 
-# .mcp.json (TypeScript source):
+# .mcp.json (TypeScript source, manual):
 # { "mcpServers": { "agent-hive": { "command": "bun", "args": ["./server.ts"] } } }
 
 # CLI:
@@ -100,6 +102,7 @@ Each peer gets a generated name (e.g. `crimson-falcon`) stored in `.agent-hive/n
 | `HIVE_HOST` | `http://127.0.0.1:7899` | Broker URL (for clients) |
 | `AGENT_HIVE_TOKEN` | (from `~/.agent-hive.key`) | Auth token |
 | `AGENT_HIVE_HARNESS` | `claude-code` | Harness type identifier |
+| `COWORKER_PATH` | (auto-detected) | Override path to coworker binary for auto MCP config |
 | `OPENAI_API_KEY` | — | Enables auto-summary |
 
 ## Bun

@@ -8,13 +8,17 @@ use crate::spawn::AgentProcess;
 
 pub struct AgentManager {
     pub bridge_id: String,
+    pub broker_url: String,
+    pub coworker_path: Option<String>,
     pub agents: HashMap<String, AgentProcess>,
 }
 
 impl AgentManager {
-    pub fn new(bridge_id: String) -> Self {
+    pub fn new(bridge_id: String, broker_url: String, coworker_path: Option<String>) -> Self {
         Self {
             bridge_id,
+            broker_url,
+            coworker_path,
             agents: HashMap::new(),
         }
     }
@@ -25,7 +29,14 @@ impl AgentManager {
         args: Vec<String>,
         broker_tx: &Arc<Mutex<BrokerSender>>,
     ) -> Result<String> {
-        let mut agent = AgentProcess::spawn(cmd, args)?;
+        // Auto-setup MCP config for harness commands
+        if let Some(ref coworker) = self.coworker_path {
+            if crate::is_harness_command(&cmd) {
+                crate::ensure_mcp_config(coworker);
+            }
+        }
+
+        let mut agent = AgentProcess::spawn(cmd, args, &self.broker_url)?;
         let id = agent.id.clone();
 
         // Register with broker

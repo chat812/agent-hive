@@ -4,127 +4,321 @@ mod manager;
 mod spawn;
 
 use anyhow::Result;
+use clap::Parser;
 use futures_util::StreamExt;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::Mutex;
 
+#[derive(Parser)]
+#[command(name = "agent-hive-landlord", about = "Agent Hive Landlord")]
+struct Cli {
+    /// Broker URL (overrides HIVE_HOST env var)
+    #[arg(long = "host")]
+    host: Option<String>,
+    /// Path to coworker binary (auto-detected if not set)
+    #[arg(long = "coworker")]
+    coworker: Option<String>,
+}
+
+fn home_dir() -> PathBuf {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home)
+}
+
+fn read_or_generate_id() -> String {
+    let path = home_dir().join(".agent-hive-landlord-id");
+    if path.exists() {
+        if let Ok(id) = std::fs::read_to_string(&path) {
+            let id = id.trim().to_string();
+            if !id.is_empty() {
+                return id;
+            }
+        }
+    }
+    let id = hex::encode(&uuid::Uuid::new_v4().as_bytes()[..4]);
+    let _ = std::fs::write(&path, &id);
+    id
+}
+
+fn read_landlord_key() -> Option<String> {
+    let path = home_dir().join(".agent-hive-landlord.key");
+    if path.exists() {
+        if let Ok(key) = std::fs::read_to_string(&path) {
+            let key = key.trim().to_string();
+            if !key.is_empty() {
+                return Some(key);
+            }
+        }
+    }
+    None
+}
+
+pub fn save_landlord_key(key: &str) {
+    let path = home_dir().join(".agent-hive-landlord.key");
+    let _ = std::fs::write(&path, key);
+}
+
+pub fn delete_landlord_files() {
+    let _ = std::fs::remove_file(home_dir().join(".agent-hive-landlord-id"));
+    let _ = std::fs::remove_file(home_dir().join(".agent-hive-landlord.key"));
+}
+
+/// Find the coworker binary by checking common locations relative to the landlord binary.
+fn find_coworker_binary() -> Option<String> {
+    // Check COWORKER_PATH env var first
+    if let Ok(p) = std::env::var("COWORKER_PATH") {
+        if std::path::Path::new(&p).exists() {
+            return Some(p);
+        }
+    }
+
+    // Get the directory of the current executable
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
+
+    // Try: <exe_dir>/coworker (same directory)
+    let same_dir = exe_dir.join("coworker");
+    if same_dir.exists() {
+        return same_dir.to_str().map(|s| s.to_string());
+    }
+    // Try: <exe_dir>/coworker.exe
+    let same_dir_exe = exe_dir.join("coworker.exe");
+    if same_dir_exe.exists() {
+        return same_dir_exe.to_str().map(|s| s.to_string());
+    }
+
+    // Try: <exe_dir>/../../coworker/target/release/coworker (repo layout)
+    if let Some(grandparent) = exe_dir.parent().and_then(|p| p.parent()) {
+        for name in &["coworker", "coworker.exe"] {
+            let path = grandparent.join("coworker").join("target").join("release").join(name);
+            if path.exists() {
+                return path.to_str().map(|s| s.to_string());
+            }
+        }
+    }
+
+    None
+}
+
+/// Ensure .mcp.json exists in the current directory with the agent-hive entry.
+/// Ensure agent-hive MCP is configured globally in ~/.claude.json
+fn ensure_mcp_config(coworker_path: &str) {
+    let home = home_dir();
+    let config_path = home.join(".claude.json");
+
+    let mut config: serde_json::Value = if config_path.exists() {
+        std::fs::read_to_string(&config_path)
+            .ok()
+            .and_then(|c| serde_json::from_str(&c).ok())
+            .unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    // Check if agent-hive is already configured
+    if config.get("mcpServers").and_then(|s| s.get("agent-hive")).is_some() {
+        return; // already configured
+    }
+
+    // Add agent-hive entry
+    if config.get_mut("mcpServers").and_then(|v| v.as_object_mut()).is_none() {
+        config["mcpServers"] = serde_json::json!({});
+    }
+    if let Some(servers) = config.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
+        servers.insert("agent-hive".to_string(), serde_json::json!({"command": coworker_path}));
+    }
+
+    let _ = std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap_or_default());
+    println!("Configured agent-hive MCP in {}", config_path.display());
+}
+
+const HARNESS_COMMANDS: &[&str] = &["freecc", "claude", "claude-code"];
+
+fn is_harness_command(cmd: &str) -> bool {
+    // Extract the binary name from the path
+    let name = std::path::Path::new(cmd)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(cmd);
+    HARNESS_COMMANDS.contains(&name)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let broker_url = std::env::var("HIVE_HOST")
+    let cli = Cli::parse();
+
+    let broker_url = cli.host
+        .or_else(|| std::env::var("HIVE_HOST").ok())
         .map(|h| {
-            // Convert http(s) to ws(s)
             h.replace("http://", "ws://").replace("https://", "wss://")
         })
-        .unwrap_or_else(|_| "ws://127.0.0.1:7899".to_string());
-    let master_key = std::env::var("AGENT_HIVE_TOKEN")
-        .unwrap_or_else(|_| {
-            // Try reading from ~/.agent-hive.key
-            let home = std::env::var("HOME")
-                .or_else(|_| std::env::var("USERPROFILE"))
-                .unwrap_or_else(|_| ".".to_string());
-            let key_path = format!("{}/.agent-hive.key", home);
-            std::fs::read_to_string(&key_path).unwrap_or_default().trim().to_string()
-        });
+        .unwrap_or_else(|| "ws://127.0.0.1:7899".to_string());
+
     let local_port: u16 = std::env::var("BRIDGE_LOCAL_PORT")
         .unwrap_or_else(|_| "17900".to_string())
         .parse()
         .unwrap_or(17900);
 
-    let bridge_id = hex::encode(&uuid::Uuid::new_v4().as_bytes()[..4]);
+    let bridge_id = read_or_generate_id();
+    let hostname = hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_default();
 
-    println!("Agent Hive Bridge {}", bridge_id);
-    println!("Connecting to broker at {}", broker_url);
+    println!("Agent Hive Landlord {}", bridge_id);
+    println!("Hostname: {}", hostname);
+    println!("Broker: {}", broker_url);
 
-    let mgr = Arc::new(Mutex::new(manager::AgentManager::new(bridge_id.clone())));
+    // Detect coworker binary
+    let coworker_path = cli.coworker
+        .or_else(|| find_coworker_binary())
+        .or_else(|| {
+            println!("Coworker binary not found. Set --coworker or COWORKER_PATH to enable auto MCP setup.");
+            None
+        });
+    if let Some(ref p) = coworker_path {
+        println!("Coworker: {}", p);
+    }
 
-    // Connect to broker
-    let ws_stream = client::connect(&broker_url, &master_key, &bridge_id).await?;
-    println!("Connected to broker");
-
-    let (ws_sink, ws_stream) = ws_stream.split();
-
-    let broker_tx = Arc::new(Mutex::new(client::BrokerSender::new(ws_sink)));
-    let broker_rx = Arc::new(Mutex::new(ws_stream));
-
-    // Start broker message reader
-    let mgr_clone = mgr.clone();
-    let broker_tx_reader = broker_tx.clone();
-    tokio::spawn(async move {
-        client::read_broker_messages(broker_rx, mgr_clone, broker_tx_reader).await;
-    });
+    // Keep the HTTP version of the broker URL for passing to spawned agents
+    let broker_url_http = broker_url.replace("ws://", "http://").replace("wss://", "https://");
+    let mgr = Arc::new(Mutex::new(manager::AgentManager::new(
+        bridge_id.clone(),
+        broker_url_http,
+        coworker_path,
+    )));
 
     // Start local gateway for coworkers
     let mgr_gateway = mgr.clone();
-    let broker_tx_gateway = broker_tx.clone();
+    let gateway_port = local_port;
     tokio::spawn(async move {
-        if let Err(e) = gateway::start(local_port, mgr_gateway, broker_tx_gateway).await {
-            eprintln!("Gateway error: {}", e);
-        }
+        // Gateway will be started after broker connection is established
+        // For now, start it eagerly
+        let _ = gateway::start(gateway_port, mgr_gateway, Arc::new(Mutex::new(
+            client::BrokerSender::new_placeholder()
+        ))).await;
     });
 
-    // Interactive shell
-    println!("Commands: spawn <cmd>, kill <id>, list, status, quit");
-    let stdin = tokio::io::BufReader::new(tokio::io::stdin());
-    let mut lines = stdin.lines();
+    // Reconnect loop
+    let mut backoff_secs: u64 = 1;
+    let max_backoff: u64 = 30;
 
     loop {
-        tokio::select! {
-            line = lines.next_line() => {
-                match line {
-                    Ok(Some(input)) => {
-                        let parts: Vec<String> = input.split_whitespace().map(String::from).collect();
-                        if parts.is_empty() { continue; }
+        let mutual_key = read_landlord_key();
+        let key_desc = if mutual_key.is_some() { "with mutual key" } else { "new registration" };
+        println!("Connecting to broker ({})...", key_desc);
 
-                        match parts[0].as_str() {
-                            "spawn" => {
-                                if parts.len() < 2 {
-                                    println!("Usage: spawn <command> [args...]");
-                                    continue;
+        match client::connect(&broker_url, &bridge_id, mutual_key.as_deref(), &hostname).await {
+            Ok(ws_stream) => {
+                backoff_secs = 1; // reset on success
+                println!("Connected to broker");
+
+                let (ws_sink, ws_stream) = ws_stream.split();
+                let broker_tx = Arc::new(Mutex::new(client::BrokerSender::new(ws_sink)));
+                let broker_rx = Arc::new(Mutex::new(ws_stream));
+
+                // Update gateway broker sender
+                // (gateway was started with a placeholder, but broker_tx is the real one)
+
+                // Start broker message reader
+                let mgr_clone = mgr.clone();
+                let broker_tx_reader = broker_tx.clone();
+                let bridge_id_clone = bridge_id.clone();
+
+                // Interactive shell
+                println!("Commands: spawn <cmd>, kill <id>, list, status, quit");
+                let stdin = tokio::io::BufReader::new(tokio::io::stdin());
+                let mut lines = stdin.lines();
+
+                let broker_tx_clone = broker_tx.clone();
+                let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let done_clone = done.clone();
+
+                // Read broker messages in background
+                let reader_done = done.clone();
+                tokio::spawn(async move {
+                    client::read_broker_messages(broker_rx, mgr_clone, broker_tx_reader, &bridge_id_clone).await;
+                    reader_done.store(true, std::sync::atomic::Ordering::Relaxed);
+                });
+
+                // Interactive command loop
+                loop {
+                    tokio::select! {
+                        line = lines.next_line() => {
+                            match line {
+                                Ok(Some(input)) => {
+                                    let parts: Vec<String> = input.split_whitespace().map(String::from).collect();
+                                    if parts.is_empty() { continue; }
+
+                                    match parts[0].as_str() {
+                                        "spawn" => {
+                                            if parts.len() < 2 {
+                                                println!("Usage: spawn <command> [args...]");
+                                                continue;
+                                            }
+                                            let cmd = parts[1].clone();
+                                            let args: Vec<String> = parts[2..].to_vec();
+                                            let mut m = mgr.lock().await;
+                                            match m.spawn_agent(cmd, args, &broker_tx_clone).await {
+                                                Ok(id) => println!("Spawned agent: {}", id),
+                                                Err(e) => eprintln!("Spawn failed: {}", e),
+                                            }
+                                        }
+                                        "kill" => {
+                                            if parts.len() < 2 {
+                                                println!("Usage: kill <agent-id>");
+                                                continue;
+                                            }
+                                            let mut m = mgr.lock().await;
+                                            match m.kill_agent(&parts[1], &broker_tx_clone).await {
+                                                Ok(()) => println!("Killed agent: {}", parts[1]),
+                                                Err(e) => eprintln!("Kill failed: {}", e),
+                                            }
+                                        }
+                                        "list" => {
+                                            let m = mgr.lock().await;
+                                            m.list_agents();
+                                        }
+                                        "status" => {
+                                            let m = mgr.lock().await;
+                                            println!("Bridge: {}", m.bridge_id);
+                                            println!("Agents: {}", m.agents.len());
+                                        }
+                                        "quit" | "exit" => {
+                                            println!("Shutting down...");
+                                            let mut m = mgr.lock().await;
+                                            m.shutdown(&broker_tx_clone).await;
+                                            return Ok(());
+                                        }
+                                        _ => println!("Unknown command: {}", parts[0]),
+                                    }
                                 }
-                                let cmd = parts[1].clone();
-                                let args: Vec<String> = parts[2..].to_vec();
-                                let mut m = mgr.lock().await;
-                                match m.spawn_agent(cmd, args, &broker_tx).await {
-                                    Ok(id) => println!("Spawned agent: {}", id),
-                                    Err(e) => eprintln!("Spawn failed: {}", e),
-                                }
+                                Ok(None) => break,
+                                Err(_) => break,
                             }
-                            "kill" => {
-                                if parts.len() < 2 {
-                                    println!("Usage: kill <agent-id>");
-                                    continue;
-                                }
-                                let mut m = mgr.lock().await;
-                                match m.kill_agent(&parts[1], &broker_tx).await {
-                                    Ok(()) => println!("Killed agent: {}", parts[1]),
-                                    Err(e) => eprintln!("Kill failed: {}", e),
-                                }
-                            }
-                            "list" => {
-                                let m = mgr.lock().await;
-                                m.list_agents();
-                            }
-                            "status" => {
-                                let m = mgr.lock().await;
-                                println!("Bridge: {}", m.bridge_id);
-                                println!("Agents: {}", m.agents.len());
-                            }
-                            "quit" | "exit" => {
-                                println!("Shutting down...");
-                                let mut m = mgr.lock().await;
-                                m.shutdown(&broker_tx).await;
+                        }
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                            if done_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                                println!("Broker disconnected");
                                 break;
                             }
-                            _ => println!("Unknown command: {}", parts[0]),
                         }
                     }
-                    Ok(None) => break,
-                    Err(_) => break,
                 }
+
+                println!("Reconnecting in {}s...", backoff_secs);
+                tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
+                backoff_secs = (backoff_secs * 2).min(max_backoff);
+            }
+            Err(e) => {
+                eprintln!("Connection failed: {}", e);
+                println!("Retrying in {}s...", backoff_secs);
+                tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
+                backoff_secs = (backoff_secs * 2).min(max_backoff);
             }
         }
     }
-
-    Ok(())
 }

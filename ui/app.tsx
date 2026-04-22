@@ -4,7 +4,7 @@ import { marked } from "marked";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
-import type { Peer, Message, Channel, ChannelRole, ChannelMemoryEntry, FileEntry, WsEvent, BridgeInfo } from "../shared/types.ts";
+import type { Peer, Message, Channel, ChannelRole, ChannelMemoryEntry, FileEntry, WsEvent, LandlordInfo } from "../shared/types.ts";
 import { PRESET_ROLES } from "./roles.ts";
 
 // --- Helpers ---
@@ -1077,45 +1077,56 @@ function TerminalPanel({ sessionId, name, ws, onClose, onTerminalReady, onRename
 
 // --- Spawn Dialog ---
 
-function SpawnDialog({ bridges, onSpawn, onClose }: {
-  bridges: BridgeInfo[];
-  onSpawn: (bridgeId: string, cmd: string, args: string[]) => void;
+function HireWorkerDialog({ landlords, onHire, onClose }: {
+  landlords: LandlordInfo[];
+  onHire: (landlordId: string, cmd: string, args: string[]) => void;
   onClose: () => void;
 }) {
-  const [bridgeId, setBridgeId] = useState(bridges[0]?.id ?? "");
+  const [landlordId, setLandlordId] = useState(landlords[0]?.id ?? "");
   const [cmd, setCmd] = useState("freecc");
   const [args, setArgs] = useState("--dangerously-load-development-channels server:agent-hive");
   const cmdRef = useRef<HTMLInputElement>(null);
 
+  const HARNESS_ARGS = "--dangerously-load-development-channels server:agent-hive";
+  const HARNESS_COMMANDS = new Set(["freecc", "claude", "claude-code"]);
+
+  useEffect(() => {
+    if (HARNESS_COMMANDS.has(cmd.trim())) {
+      setArgs(HARNESS_ARGS);
+    } else {
+      setArgs("");
+    }
+  }, [cmd]);
+
   useEffect(() => { cmdRef.current?.focus(); cmdRef.current?.select(); }, []);
 
-  const handleSpawn = () => {
+  const handleHire = () => {
     if (!cmd.trim()) return;
-    onSpawn(bridgeId, cmd.trim(), args.trim() ? args.trim().split(/\s+/) : []);
+    onHire(landlordId, cmd.trim(), args.trim() ? args.trim().split(/\s+/) : []);
     onClose();
   };
 
   return (
     <div className="spawn-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="spawn-dialog">
-        <div className="spawn-title">New Session</div>
-        <label className="spawn-label">Bridge</label>
-        <select className="spawn-select" value={bridgeId} onChange={(e) => setBridgeId(e.target.value)}>
-          {bridges.map((b) => (
-            <option key={b.id} value={b.id}>
-              {b.hostname ? `${b.hostname} (${b.id})` : b.id} — {b.agents} agent{b.agents !== 1 ? "s" : ""}
+        <div className="spawn-title">Hire Worker</div>
+        <label className="spawn-label">Landlord</label>
+        <select className="spawn-select" value={landlordId} onChange={(e) => setLandlordId(e.target.value)}>
+          {landlords.map((l) => (
+            <option key={l.id} value={l.id}>
+              {l.hostname ? `${l.hostname} (${l.id})` : l.id} — {l.agents} agent{l.agents !== 1 ? "s" : ""}
             </option>
           ))}
         </select>
         <label className="spawn-label">Command</label>
         <input ref={cmdRef} className="spawn-input" value={cmd} onChange={(e) => setCmd(e.target.value)}
-          placeholder="e.g. freecc, claude, cmd.exe, bash" onKeyDown={(e) => { if (e.key === "Enter") handleSpawn(); if (e.key === "Escape") onClose(); }} />
+          placeholder="e.g. freecc, claude, cmd.exe, bash" onKeyDown={(e) => { if (e.key === "Enter") handleHire(); if (e.key === "Escape") onClose(); }} />
         <label className="spawn-label">Arguments</label>
         <input className="spawn-input" value={args} onChange={(e) => setArgs(e.target.value)}
-          placeholder="space-separated arguments (optional)" onKeyDown={(e) => { if (e.key === "Enter") handleSpawn(); if (e.key === "Escape") onClose(); }} />
+          placeholder="space-separated arguments (optional)" onKeyDown={(e) => { if (e.key === "Enter") handleHire(); if (e.key === "Escape") onClose(); }} />
         <div className="spawn-actions">
           <button className="spawn-cancel" onClick={onClose}>Cancel</button>
-          <button className="spawn-ok" onClick={handleSpawn}>Spawn</button>
+          <button className="spawn-ok" onClick={handleHire}>Hire</button>
         </div>
       </div>
     </div>
@@ -1133,7 +1144,8 @@ function Dashboard({ masterToken }: { masterToken: string }) {
   const [selectedChannel, setSelectedChannel] = useState<string>("main");
   const [channelMemory, setChannelMemory] = useState<Record<string, ChannelMemoryEntry[]>>({});
   const [channelFiles, setChannelFiles] = useState<Record<string, FileEntry[]>>({});
-  const [bridges, setBridges] = useState<BridgeInfo[]>([]);
+  const [landlords, setLandlords] = useState<LandlordInfo[]>([]);
+  const [pendingLandlords, setPendingLandlords] = useState<LandlordInfo[]>([]);
   const [openTerminals, setOpenTerminals] = useState<Set<string>>(new Set());
   const [showSpawnDialog, setShowSpawnDialog] = useState(false);
   const [terminalNames, setTerminalNames] = useState<Record<string, string>>({});
@@ -1157,7 +1169,8 @@ function Dashboard({ masterToken }: { masterToken: string }) {
         setPeers(event.peers);
         setMessages(event.recent_messages);
         setChannels(event.channels ?? []);
-        setBridges(event.bridges ?? []);
+        setLandlords((event as any).landlords ?? []);
+        setPendingLandlords((event as any).pending_landlords ?? []);
         break;
       case "peer_pending":
       case "peer_joined":
@@ -1165,7 +1178,7 @@ function Dashboard({ masterToken }: { masterToken: string }) {
           const filtered = prev.filter((p) => p.id !== event.peer.id);
           return [...filtered, event.peer];
         });
-        // Auto-open terminal for bridge-spawned agents
+        // Auto-open terminal for landlord-spawned agents
         if (event.type === "peer_joined" && event.peer.bridge_id) {
           setOpenTerminals((prev) => {
             const next = new Set(prev);
@@ -1303,8 +1316,18 @@ function Dashboard({ masterToken }: { masterToken: string }) {
         if (exitedInst) { exitedInst.term.dispose(); delete terminalInstances.current[event.session_id]; }
         delete outputBuffers.current[event.session_id];
         break;
-      case "bridge_update":
-        setBridges(event.bridges ?? []);
+      case "landlord_update":
+        setLandlords(event.landlords ?? []);
+        break;
+      case "landlord_pending":
+        setPendingLandlords((prev) => [...prev.filter((l) => l.id !== event.landlord.id), event.landlord]);
+        break;
+      case "landlord_approved":
+        setPendingLandlords((prev) => prev.filter((l) => l.id !== event.landlord.id));
+        setLandlords((prev) => [...prev.filter((l) => l.id !== event.landlord.id), event.landlord]);
+        break;
+      case "landlord_rejected":
+        setPendingLandlords((prev) => prev.filter((l) => l.id !== event.landlord_id));
         break;
     }
   }, []);
@@ -1377,9 +1400,9 @@ function Dashboard({ masterToken }: { masterToken: string }) {
     } catch {}
   }, [masterToken]);
 
-  const handleSpawn = useCallback((bridgeId: string, cmd: string, args: string[]) => {
+  const handleHire = useCallback((landlordId: string, cmd: string, args: string[]) => {
     if (wsRef.current && wsRef.current.readyState === 1) {
-      wsRef.current.send(JSON.stringify({ type: "spawn_agent", bridge_id: bridgeId, cmd, args }));
+      wsRef.current.send(JSON.stringify({ type: "spawn_agent", bridge_id: landlordId, cmd, args }));
     }
   }, []);
 
@@ -1463,14 +1486,57 @@ function Dashboard({ masterToken }: { masterToken: string }) {
         </div>
         <ChannelPanel channels={channels} masterToken={masterToken} selectedChannel={selectedChannel} onSelectChannel={setSelectedChannel} />
 
+        {/* Landlords panel */}
+        <div className="sidebar-section">
+          <div className="sidebar-section-header">
+            Landlords
+            <span className="count">{landlords.length}</span>
+            {landlords.length > 0 && (
+              <button className="btn-spawn-sm" onClick={() => setShowSpawnDialog(true)} title="Hire Worker">+</button>
+            )}
+          </div>
+          {landlords.length === 0 && pendingLandlords.length === 0 ? (
+            <div className="sidebar-empty">No landlords connected</div>
+          ) : (
+            <div className="sidebar-terminals">
+              {landlords.map((l) => (
+                <div key={l.id} className="sidebar-terminal-item">
+                  <span className="sidebar-terminal-dot" />
+                  <span className="sidebar-terminal-name" title={l.id}>{l.hostname || l.id}</span>
+                  <span className="sidebar-terminal-agents">{l.agents}</span>
+                </div>
+              ))}
+              {pendingLandlords.map((l) => (
+                <div key={l.id} className="sidebar-terminal-item">
+                  <span className="sidebar-terminal-dot" style={{ background: "var(--orange)" }} />
+                  <span className="sidebar-terminal-name" title={l.id}>{l.hostname || l.id}</span>
+                  <button className="sidebar-terminal-kill" style={{ color: "var(--green)" }}
+                    onClick={async () => {
+                      await fetch("/auth/landlord-approve", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${masterToken}` },
+                        body: JSON.stringify({ bridge_id: l.id }),
+                      });
+                    }} title="Approve">&#10003;</button>
+                  <button className="sidebar-terminal-kill"
+                    onClick={async () => {
+                      await fetch("/auth/landlord-reject", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${masterToken}` },
+                        body: JSON.stringify({ bridge_id: l.id }),
+                      });
+                    }} title="Reject">&times;</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         {/* Terminals list */}
         <div className="sidebar-section">
           <div className="sidebar-section-header">
             Terminals
             <span className="count">{openTerminals.size}</span>
-            {bridges.length > 0 && (
-              <button className="btn-spawn-sm" onClick={() => setShowSpawnDialog(true)} title="New Session">+</button>
-            )}
           </div>
           {openTerminals.size === 0 ? (
             <div className="sidebar-empty">No active terminals</div>
@@ -1478,10 +1544,12 @@ function Dashboard({ masterToken }: { masterToken: string }) {
             <div className="sidebar-terminals">
               {Array.from(openTerminals).map((sessionId) => {
                 const peer = peers.find((p) => p.id === sessionId);
+                const landlord = peer?.bridge_id ? landlords.find((l) => l.id === peer.bridge_id) : null;
+                const landlordLabel = landlord ? ` (${landlord.hostname || landlord.id})` : "";
                 return (
                   <div key={sessionId} className="sidebar-terminal-item">
                     <span className="sidebar-terminal-dot" />
-                    <span className="sidebar-terminal-name">{terminalNames[sessionId] ?? peer?.name ?? sessionId}</span>
+                    <span className="sidebar-terminal-name">{terminalNames[sessionId] ?? peer?.name ?? sessionId}{landlordLabel}</span>
                     <button className="sidebar-terminal-kill" onClick={() => handleKillTerminal(sessionId)} title="Kill">&times;</button>
                   </div>
                 );
@@ -1507,14 +1575,19 @@ function Dashboard({ masterToken }: { masterToken: string }) {
                 {pendingPeers.length} pending
               </span>
             )}
-            {selectedChannelData?.aborted ? (
-              <button className="btn btn-resume" onClick={handleResume} title="Clear abort signal">✅ Resume</button>
-            ) : (
-              <button className="btn btn-force-stop" onClick={handleForceStop} title="Force all workers to stop">⛔ Stop</button>
+            {channelOffline.length > 0 && (
+              <button className="btn" onClick={async () => {
+                for (const p of channelOffline) {
+                  await fetch("/admin/remove-peer", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${masterToken}` },
+                    body: JSON.stringify({ peer_id: p.id }),
+                  });
+                }
+              }} title={`Remove ${channelOffline.length} offline peer${channelOffline.length !== 1 ? "s" : ""}`}>Clear Inactive</button>
             )}
-            <button className="btn btn-reset" onClick={handleReset} title="Clear memory, messages, and notify all agents to start fresh">🔄 Reset</button>
-            {bridges.length > 0 && (
-              <button className="btn btn-spawn" onClick={() => setShowSpawnDialog(true)} title="Spawn a new agent on a bridge">+ New Session</button>
+            {landlords.length > 0 && (
+              <button className="btn btn-spawn" onClick={() => setShowSpawnDialog(true)} title="Hire a worker on a landlord">+ Hire Worker</button>
             )}
           </div>
         </header>
@@ -1611,15 +1684,17 @@ function Dashboard({ masterToken }: { masterToken: string }) {
             </div>
             <div className="terminal-area">
               {openTerminals.size === 0 ? (
-                <div className="empty">No active terminals. Click + New Session to spawn an agent.</div>
+                <div className="empty">No active terminals. Click + Hire Worker to hire an agent.</div>
               ) : (
                 Array.from(openTerminals).map((sessionId) => {
                   const peer = peers.find((p) => p.id === sessionId);
+                  const landlord = peer?.bridge_id ? landlords.find((l) => l.id === peer.bridge_id) : null;
+                  const landlordLabel = landlord ? ` (${landlord.hostname || landlord.id})` : "";
                   return (
                     <TerminalPanel
                       key={sessionId}
                       sessionId={sessionId}
-                      name={terminalNames[sessionId] ?? peer?.name ?? sessionId}
+                      name={`${terminalNames[sessionId] ?? peer?.name ?? sessionId}${landlordLabel}`}
                       ws={wsRef.current}
                       onClose={() => handleKillTerminal(sessionId)}
                       onTerminalReady={handleTerminalReady}
@@ -1632,11 +1707,11 @@ function Dashboard({ masterToken }: { masterToken: string }) {
           </div>
         </div>
 
-        {/* Spawn dialog */}
+        {/* Hire worker dialog */}
         {showSpawnDialog && (
-          <SpawnDialog
-            bridges={bridges}
-            onSpawn={handleSpawn}
+          <HireWorkerDialog
+            landlords={landlords}
+            onHire={handleHire}
             onClose={() => setShowSpawnDialog(false)}
           />
         )}

@@ -31325,19 +31325,28 @@ function TerminalPanel({ sessionId, name, ws: ws2, onClose, onTerminalReady, onR
     ]
   }, undefined, true, undefined, this);
 }
-function SpawnDialog({ bridges, onSpawn, onClose }) {
-  const [bridgeId, setBridgeId] = import_react.useState(bridges[0]?.id ?? "");
+function HireWorkerDialog({ landlords, onHire, onClose }) {
+  const [landlordId, setLandlordId] = import_react.useState(landlords[0]?.id ?? "");
   const [cmd, setCmd] = import_react.useState("freecc");
   const [args, setArgs] = import_react.useState("--dangerously-load-development-channels server:agent-hive");
   const cmdRef = import_react.useRef(null);
+  const HARNESS_ARGS = "--dangerously-load-development-channels server:agent-hive";
+  const HARNESS_COMMANDS = new Set(["freecc", "claude", "claude-code"]);
+  import_react.useEffect(() => {
+    if (HARNESS_COMMANDS.has(cmd.trim())) {
+      setArgs(HARNESS_ARGS);
+    } else {
+      setArgs("");
+    }
+  }, [cmd]);
   import_react.useEffect(() => {
     cmdRef.current?.focus();
     cmdRef.current?.select();
   }, []);
-  const handleSpawn = () => {
+  const handleHire = () => {
     if (!cmd.trim())
       return;
-    onSpawn(bridgeId, cmd.trim(), args.trim() ? args.trim().split(/\s+/) : []);
+    onHire(landlordId, cmd.trim(), args.trim() ? args.trim().split(/\s+/) : []);
     onClose();
   };
   return /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
@@ -31351,26 +31360,26 @@ function SpawnDialog({ bridges, onSpawn, onClose }) {
       children: [
         /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
           className: "spawn-title",
-          children: "New Session"
+          children: "Hire Worker"
         }, undefined, false, undefined, this),
         /* @__PURE__ */ jsx_dev_runtime.jsxDEV("label", {
           className: "spawn-label",
-          children: "Bridge"
+          children: "Landlord"
         }, undefined, false, undefined, this),
         /* @__PURE__ */ jsx_dev_runtime.jsxDEV("select", {
           className: "spawn-select",
-          value: bridgeId,
-          onChange: (e) => setBridgeId(e.target.value),
-          children: bridges.map((b3) => /* @__PURE__ */ jsx_dev_runtime.jsxDEV("option", {
-            value: b3.id,
+          value: landlordId,
+          onChange: (e) => setLandlordId(e.target.value),
+          children: landlords.map((l3) => /* @__PURE__ */ jsx_dev_runtime.jsxDEV("option", {
+            value: l3.id,
             children: [
-              b3.hostname ? `${b3.hostname} (${b3.id})` : b3.id,
+              l3.hostname ? `${l3.hostname} (${l3.id})` : l3.id,
               " — ",
-              b3.agents,
+              l3.agents,
               " agent",
-              b3.agents !== 1 ? "s" : ""
+              l3.agents !== 1 ? "s" : ""
             ]
-          }, b3.id, true, undefined, this))
+          }, l3.id, true, undefined, this))
         }, undefined, false, undefined, this),
         /* @__PURE__ */ jsx_dev_runtime.jsxDEV("label", {
           className: "spawn-label",
@@ -31384,7 +31393,7 @@ function SpawnDialog({ bridges, onSpawn, onClose }) {
           placeholder: "e.g. freecc, claude, cmd.exe, bash",
           onKeyDown: (e) => {
             if (e.key === "Enter")
-              handleSpawn();
+              handleHire();
             if (e.key === "Escape")
               onClose();
           }
@@ -31400,7 +31409,7 @@ function SpawnDialog({ bridges, onSpawn, onClose }) {
           placeholder: "space-separated arguments (optional)",
           onKeyDown: (e) => {
             if (e.key === "Enter")
-              handleSpawn();
+              handleHire();
             if (e.key === "Escape")
               onClose();
           }
@@ -31415,8 +31424,8 @@ function SpawnDialog({ bridges, onSpawn, onClose }) {
             }, undefined, false, undefined, this),
             /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
               className: "spawn-ok",
-              onClick: handleSpawn,
-              children: "Spawn"
+              onClick: handleHire,
+              children: "Hire"
             }, undefined, false, undefined, this)
           ]
         }, undefined, true, undefined, this)
@@ -31433,7 +31442,8 @@ function Dashboard({ masterToken }) {
   const [selectedChannel, setSelectedChannel] = import_react.useState("main");
   const [channelMemory, setChannelMemory] = import_react.useState({});
   const [channelFiles, setChannelFiles] = import_react.useState({});
-  const [bridges, setBridges] = import_react.useState([]);
+  const [landlords, setLandlords] = import_react.useState([]);
+  const [pendingLandlords, setPendingLandlords] = import_react.useState([]);
   const [openTerminals, setOpenTerminals] = import_react.useState(new Set);
   const [showSpawnDialog, setShowSpawnDialog] = import_react.useState(false);
   const [terminalNames, setTerminalNames] = import_react.useState({});
@@ -31451,7 +31461,8 @@ function Dashboard({ masterToken }) {
         setPeers(event.peers);
         setMessages(event.recent_messages);
         setChannels(event.channels ?? []);
-        setBridges(event.bridges ?? []);
+        setLandlords(event.landlords ?? []);
+        setPendingLandlords(event.pending_landlords ?? []);
         break;
       case "peer_pending":
       case "peer_joined":
@@ -31586,8 +31597,18 @@ function Dashboard({ masterToken }) {
         }
         delete outputBuffers.current[event.session_id];
         break;
-      case "bridge_update":
-        setBridges(event.bridges ?? []);
+      case "landlord_update":
+        setLandlords(event.landlords ?? []);
+        break;
+      case "landlord_pending":
+        setPendingLandlords((prev) => [...prev.filter((l3) => l3.id !== event.landlord.id), event.landlord]);
+        break;
+      case "landlord_approved":
+        setPendingLandlords((prev) => prev.filter((l3) => l3.id !== event.landlord.id));
+        setLandlords((prev) => [...prev.filter((l3) => l3.id !== event.landlord.id), event.landlord]);
+        break;
+      case "landlord_rejected":
+        setPendingLandlords((prev) => prev.filter((l3) => l3.id !== event.landlord_id));
         break;
     }
   }, []);
@@ -31651,9 +31672,9 @@ function Dashboard({ masterToken }) {
       setMessages([]);
     } catch {}
   }, [masterToken]);
-  const handleSpawn = import_react.useCallback((bridgeId, cmd, args) => {
+  const handleHire = import_react.useCallback((landlordId, cmd, args) => {
     if (wsRef.current && wsRef.current.readyState === 1) {
-      wsRef.current.send(JSON.stringify({ type: "spawn_agent", bridge_id: bridgeId, cmd, args }));
+      wsRef.current.send(JSON.stringify({ type: "spawn_agent", bridge_id: landlordId, cmd, args }));
     }
   }, []);
   const handleKillTerminal = import_react.useCallback((sessionId) => {
@@ -31751,16 +31772,95 @@ function Dashboard({ masterToken }) {
               /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
                 className: "sidebar-section-header",
                 children: [
+                  "Landlords",
+                  /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                    className: "count",
+                    children: landlords.length
+                  }, undefined, false, undefined, this),
+                  landlords.length > 0 && /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
+                    className: "btn-spawn-sm",
+                    onClick: () => setShowSpawnDialog(true),
+                    title: "Hire Worker",
+                    children: "+"
+                  }, undefined, false, undefined, this)
+                ]
+              }, undefined, true, undefined, this),
+              landlords.length === 0 && pendingLandlords.length === 0 ? /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+                className: "sidebar-empty",
+                children: "No landlords connected"
+              }, undefined, false, undefined, this) : /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+                className: "sidebar-terminals",
+                children: [
+                  landlords.map((l3) => /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+                    className: "sidebar-terminal-item",
+                    children: [
+                      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                        className: "sidebar-terminal-dot"
+                      }, undefined, false, undefined, this),
+                      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                        className: "sidebar-terminal-name",
+                        title: l3.id,
+                        children: l3.hostname || l3.id
+                      }, undefined, false, undefined, this),
+                      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                        className: "sidebar-terminal-agents",
+                        children: l3.agents
+                      }, undefined, false, undefined, this)
+                    ]
+                  }, l3.id, true, undefined, this)),
+                  pendingLandlords.map((l3) => /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+                    className: "sidebar-terminal-item",
+                    children: [
+                      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                        className: "sidebar-terminal-dot",
+                        style: { background: "var(--orange)" }
+                      }, undefined, false, undefined, this),
+                      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                        className: "sidebar-terminal-name",
+                        title: l3.id,
+                        children: l3.hostname || l3.id
+                      }, undefined, false, undefined, this),
+                      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
+                        className: "sidebar-terminal-kill",
+                        style: { color: "var(--green)" },
+                        onClick: async () => {
+                          await fetch("/auth/landlord-approve", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
+                            body: JSON.stringify({ bridge_id: l3.id })
+                          });
+                        },
+                        title: "Approve",
+                        children: "✓"
+                      }, undefined, false, undefined, this),
+                      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
+                        className: "sidebar-terminal-kill",
+                        onClick: async () => {
+                          await fetch("/auth/landlord-reject", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
+                            body: JSON.stringify({ bridge_id: l3.id })
+                          });
+                        },
+                        title: "Reject",
+                        children: "×"
+                      }, undefined, false, undefined, this)
+                    ]
+                  }, l3.id, true, undefined, this))
+                ]
+              }, undefined, true, undefined, this)
+            ]
+          }, undefined, true, undefined, this),
+          /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+            className: "sidebar-section",
+            children: [
+              /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+                className: "sidebar-section-header",
+                children: [
                   "Terminals",
                   /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
                     className: "count",
                     children: openTerminals.size
-                  }, undefined, false, undefined, this),
-                  bridges.length > 0 && /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
-                    className: "btn-spawn-sm",
-                    onClick: () => setShowSpawnDialog(true),
-                    title: "New Session",
-                    children: "+"
                   }, undefined, false, undefined, this)
                 ]
               }, undefined, true, undefined, this),
@@ -31771,6 +31871,8 @@ function Dashboard({ masterToken }) {
                 className: "sidebar-terminals",
                 children: Array.from(openTerminals).map((sessionId) => {
                   const peer = peers.find((p) => p.id === sessionId);
+                  const landlord = peer?.bridge_id ? landlords.find((l3) => l3.id === peer.bridge_id) : null;
+                  const landlordLabel = landlord ? ` (${landlord.hostname || landlord.id})` : "";
                   return /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
                     className: "sidebar-terminal-item",
                     children: [
@@ -31779,8 +31881,11 @@ function Dashboard({ masterToken }) {
                       }, undefined, false, undefined, this),
                       /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
                         className: "sidebar-terminal-name",
-                        children: terminalNames[sessionId] ?? peer?.name ?? sessionId
-                      }, undefined, false, undefined, this),
+                        children: [
+                          terminalNames[sessionId] ?? peer?.name ?? sessionId,
+                          landlordLabel
+                        ]
+                      }, undefined, true, undefined, this),
                       /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
                         className: "sidebar-terminal-kill",
                         onClick: () => handleKillTerminal(sessionId),
@@ -31831,28 +31936,25 @@ function Dashboard({ masterToken }) {
                       " pending"
                     ]
                   }, undefined, true, undefined, this),
-                  selectedChannelData?.aborted ? /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
-                    className: "btn btn-resume",
-                    onClick: handleResume,
-                    title: "Clear abort signal",
-                    children: "✅ Resume"
-                  }, undefined, false, undefined, this) : /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
-                    className: "btn btn-force-stop",
-                    onClick: handleForceStop,
-                    title: "Force all workers to stop",
-                    children: "⛔ Stop"
+                  channelOffline.length > 0 && /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
+                    className: "btn",
+                    onClick: async () => {
+                      for (const p of channelOffline) {
+                        await fetch("/admin/remove-peer", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
+                          body: JSON.stringify({ peer_id: p.id })
+                        });
+                      }
+                    },
+                    title: `Remove ${channelOffline.length} offline peer${channelOffline.length !== 1 ? "s" : ""}`,
+                    children: "Clear Inactive"
                   }, undefined, false, undefined, this),
-                  /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
-                    className: "btn btn-reset",
-                    onClick: handleReset,
-                    title: "Clear memory, messages, and notify all agents to start fresh",
-                    children: "\uD83D\uDD04 Reset"
-                  }, undefined, false, undefined, this),
-                  bridges.length > 0 && /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
+                  landlords.length > 0 && /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
                     className: "btn btn-spawn",
                     onClick: () => setShowSpawnDialog(true),
-                    title: "Spawn a new agent on a bridge",
-                    children: "+ New Session"
+                    title: "Hire a worker on a landlord",
+                    children: "+ Hire Worker"
                   }, undefined, false, undefined, this)
                 ]
               }, undefined, true, undefined, this)
@@ -32018,12 +32120,14 @@ function Dashboard({ masterToken }) {
                     className: "terminal-area",
                     children: openTerminals.size === 0 ? /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
                       className: "empty",
-                      children: "No active terminals. Click + New Session to spawn an agent."
+                      children: "No active terminals. Click + Hire Worker to hire an agent."
                     }, undefined, false, undefined, this) : Array.from(openTerminals).map((sessionId) => {
                       const peer = peers.find((p) => p.id === sessionId);
+                      const landlord = peer?.bridge_id ? landlords.find((l3) => l3.id === peer.bridge_id) : null;
+                      const landlordLabel = landlord ? ` (${landlord.hostname || landlord.id})` : "";
                       return /* @__PURE__ */ jsx_dev_runtime.jsxDEV(TerminalPanel, {
                         sessionId,
-                        name: terminalNames[sessionId] ?? peer?.name ?? sessionId,
+                        name: `${terminalNames[sessionId] ?? peer?.name ?? sessionId}${landlordLabel}`,
                         ws: wsRef.current,
                         onClose: () => handleKillTerminal(sessionId),
                         onTerminalReady: handleTerminalReady,
@@ -32035,9 +32139,9 @@ function Dashboard({ masterToken }) {
               }, undefined, true, undefined, this)
             ]
           }, undefined, true, undefined, this),
-          showSpawnDialog && /* @__PURE__ */ jsx_dev_runtime.jsxDEV(SpawnDialog, {
-            bridges,
-            onSpawn: handleSpawn,
+          showSpawnDialog && /* @__PURE__ */ jsx_dev_runtime.jsxDEV(HireWorkerDialog, {
+            landlords,
+            onHire: handleHire,
             onClose: () => setShowSpawnDialog(false)
           }, undefined, false, undefined, this)
         ]

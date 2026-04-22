@@ -139,6 +139,10 @@ body {
   font-weight: 700;
 }
 
+.sidebar-section-header .count.pending {
+  background: var(--orange);
+}
+
 .btn-spawn-sm {
   margin-left: auto;
   background: none;
@@ -198,6 +202,15 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.sidebar-terminal-agents {
+  font-size: 10px;
+  color: var(--text-muted);
+  background: var(--bg-hover);
+  padding: 1px 5px;
+  border-radius: 8px;
+  margin-right: 2px;
 }
 
 .sidebar-terminal-kill {

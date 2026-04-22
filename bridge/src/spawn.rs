@@ -12,7 +12,7 @@ pub struct AgentProcess {
 }
 
 impl AgentProcess {
-    pub fn spawn(cmd: String, args: Vec<String>) -> Result<Self> {
+    pub fn spawn(cmd: String, args: Vec<String>, broker_url: &str) -> Result<Self> {
         let id = hex::encode(&uuid::Uuid::new_v4().as_bytes()[..4]);
 
         let pty_system = native_pty_system();
@@ -25,6 +25,9 @@ impl AgentProcess {
             })
             .context("Failed to create PTY")?;
 
+        // Convert ws:// back to http:// for the agent's HIVE_HOST
+        let hive_host = broker_url.replace("ws://", "http://").replace("wss://", "https://");
+
         // On Windows, wrap in cmd.exe /C to resolve .cmd/.sh launchers
         #[cfg(target_os = "windows")]
         let builder = {
@@ -33,6 +36,7 @@ impl AgentProcess {
             let mut b = CommandBuilder::new("cmd.exe");
             b.arg("/C");
             b.args(&all_args);
+            b.env("HIVE_HOST", &hive_host);
             b
         };
 
@@ -40,6 +44,7 @@ impl AgentProcess {
         let builder = {
             let mut b = CommandBuilder::new(&cmd);
             b.args(&args);
+            b.env("HIVE_HOST", &hive_host);
             b
         };
 

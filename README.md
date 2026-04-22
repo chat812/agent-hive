@@ -18,11 +18,11 @@ Let your AI coding instances find each other, coordinate, and work as a team. Cl
   │                  HTTP + WebSocket + SQLite + Dashboard                 │
   │                                                                       │
   │  Routes messages, manages channels, stores memory, pushes events      │
-  │  Routes terminal I/O between bridges and dashboard                    │
+  │  Routes terminal I/O between landlords and dashboard                  │
   └───────────────────────────┬──────────────────────┬────────────────────┘
                               │                      │
                     ┌─────────▼──────────┐  ┌───────▼───────────┐
-                    │  Bridge (Rust)     │  │  Bridge (Rust)    │
+                    │  Landlord (Rust)   │  │  Landlord (Rust)  │
                     │  Machine A         │  │  Machine B        │
                     │  PTY → xterm.js    │  │  PTY → xterm.js   │
                     │  Local gateway     │  │  Local gateway    │
@@ -38,7 +38,7 @@ Let your AI coding instances find each other, coordinate, and work as a team. Cl
 - **Shared memory** — per-channel key-value store for plans, findings, status
 - **File sharing** — upload/download files and folders between agents
 - **Web dashboard** — real-time peer visualization, role assignment, message log, memory browser
-- **Live terminals** — bridge spawns agents with PTYs, terminal output streamed to xterm.js panels in the dashboard
+- **Live terminals** — landlord spawns agents with PTYs, terminal output streamed to xterm.js panels in the dashboard
 - **Approval-based auth** — new peers held pending until dashboard approval; local peers auto-approved
 - **Idle/stall detection** — MCP server detects unresponsive agents and alerts Master
 - **Token tracking** — client-side byte estimation reported via heartbeat
@@ -57,6 +57,10 @@ bun broker.ts
 On first start, a master key is generated and saved to `~/.agent-hive.key`. The broker listens on `0.0.0.0:7899` and serves the web dashboard at `http://localhost:7899`. The UI bundle is auto-built on startup.
 
 ### 2. Register the MCP server
+
+The landlord auto-detects the coworker binary and auto-configures the MCP server globally in `~/.claude.json`. No manual setup is needed — just build the binary and start the landlord (step 5).
+
+To register manually:
 
 **Option A — Rust binary (recommended, ~3 MB, no runtime needed):**
 
@@ -105,23 +109,23 @@ export HIVE_HOST=http://<broker-host>:7899
 
 The peer will appear as **pending** in the dashboard. Approve it to grant access.
 
-### 6. Start a bridge (optional — for live terminals)
+### 6. Start a landlord (optional — for live terminals)
 
-The bridge is a Rust binary that runs on each machine. It connects to the broker, spawns agent processes with PTYs, and streams their terminal output to the dashboard.
+The landlord is a Rust binary that runs on each machine. It connects to the broker, spawns agent processes with PTYs, and streams their terminal output to the dashboard.
 
 ```bash
 cd bridge && cargo build --release
-./target/release/agent-hive-bridge
+./target/release/agent-hive-landlord
 ```
 
-The bridge reads the master key from `~/.agent-hive.key` automatically. Set `HIVE_HOST` if the broker is remote:
+The landlord reads the master key from `~/.agent-hive.key` automatically. Set `HIVE_HOST` if the broker is remote:
 
 ```bash
 export HIVE_HOST=http://<broker-host>:7899
 export AGENT_HIVE_TOKEN=<master-key>
 ```
 
-Once connected, click **+ New Session** in the dashboard header to spawn an agent. Select a bridge, enter a command (e.g. `claude`, `cmd.exe`, `bash`), and a live terminal panel appears below the messages section.
+Once connected, click **Hire Worker** in the dashboard header to spawn an agent. Select a landlord, enter a command (e.g. `claude`, `cmd.exe`, `bash`), and a live terminal panel appears below the messages section.
 
 ---
 
@@ -195,20 +199,20 @@ Agent ──── HTTP POST ────► Broker       (tool calls: send, lis
 Agent ──── HTTP GET ─────► Broker       (fallback poll when WS is down)
 ```
 
-### Bridge transport
+### Landlord transport
 
-Bridges connect via a dedicated WebSocket (`/ws/bridge?token=...&bridge_id=...`) and multiplex all terminal I/O for their agents over a single connection:
+Landlords connect via a dedicated WebSocket (`/ws/landlord?token=...&bridge_id=...`) and multiplex all terminal I/O for their agents over a single connection:
 
 ```
-Dashboard ──WS──► Broker ──WS──► Bridge ──PTY──► Agent process
-   xterm.js       (routes)      (spawns)     (terminal I/O)
+Dashboard ──WS──► Broker ──WS──► Landlord ──PTY──► Agent process
+   xterm.js       (routes)      (spawns)      (terminal I/O)
 ```
 
-- **Terminal output**: PTY → hex-encoded JSON → bridge WS → broker → broadcast to dashboards → `xterm.write()`
-- **Terminal input**: `xterm.onData()` → dashboard WS → broker → bridge WS → PTY writer
-- **Resize**: `ResizeObserver` → dashboard WS → broker → bridge WS → PTY resize
-- Bridge agents are auto-approved and kept alive by broker ping (every 5s)
-- Each bridge also runs a local HTTP gateway on port 17900 for coworker MCP servers
+- **Terminal output**: PTY → hex-encoded JSON → landlord WS → broker → broadcast to dashboards → `xterm.write()`
+- **Terminal input**: `xterm.onData()` → dashboard WS → broker → landlord WS → PTY writer
+- **Resize**: `ResizeObserver` → dashboard WS → broker → landlord WS → PTY resize
+- Landlord agents are auto-approved and kept alive by broker ping (every 5s)
+- Each landlord also runs a local HTTP gateway on port 17900 for coworker MCP servers
 
 ---
 
@@ -219,13 +223,13 @@ Dashboard ──WS──► Broker ──WS──► Bridge ──PTY──► A
                     │  Broker (broker.ts)           │
                     │  0.0.0.0:7899                 │
                     │  SQLite (~/.agent-hive.db)    │
-                    │  WebSocket (agents + bridges  │
+                    │  WebSocket (agents + landlords │
                     │    + dashboard)               │
                     │  Web UI (React + xterm.js)    │
                     │  Auto-builds UI on startup    │
                     └──────┬──────────────────┬────┘
                            │                  │
-              MCP server (stdio)     Bridge (Rust binary)
+              MCP server (stdio)     Landlord (Rust binary)
               Rust or TypeScript     Spawns PTYs, streams I/O
               Machine A              Machine B
                     │                       │
@@ -236,10 +240,10 @@ Dashboard ──WS──► Broker ──WS──► Bridge ──PTY──► A
 
 | File | Purpose |
 |------|---------|
-| `broker.ts` | HTTP + WebSocket server, SQLite, auth, dashboard, bridge routing, UI auto-build |
+| `broker.ts` | HTTP + WebSocket server, SQLite, auth, dashboard, landlord routing, UI auto-build |
 | `server.ts` | TypeScript MCP stdio server (one per coding session) |
 | `coworker/src/main.rs` | Rust MCP stdio server — same features, ~3 MB binary |
-| `bridge/` | Rust bridge binary — PTY spawn, terminal I/O, local HTTP gateway |
+| `bridge/` | Rust landlord binary — PTY spawn, terminal I/O, local HTTP gateway |
 | `shared/types.ts` | Shared types for broker API and WebSocket events |
 | `shared/auth.ts` | Master key management, token generation |
 | `shared/summarize.ts` | Auto-summary generation via OpenAI |
@@ -257,12 +261,13 @@ The dashboard (served at `http://<broker>:7899`) provides:
 - **Peer grid** — connected instances with pixel avatars, role badges, activity bubbles
 - **Peer cards** — set roles, move to channels, view token usage
 - **Channel sidebar** — create/remove channels, click peers to configure
+- **Landlords panel** — view connected landlords, approve/reject pending landlords
 - **Message log** — paginated (200/page), real-time via WebSocket
 - **Live terminals** — xterm.js panels below the messages section, with full PTY I/O
-- **New Session** — spawn dialog to launch agents on connected bridges
+- **Hire Worker** — spawn dialog to launch agents on connected landlords
 - **Channel memory** — browsable KV store with value inspector
 - **File browser** — shared files with versioning
-- **Controls** — Stop/Resume (abort signals), Reset (clear everything for new job)
+- **Clear Inactive** — removes offline peers from the current channel
 - **Move peers** — drag peers between channels from the role popup
 
 ---
@@ -299,10 +304,11 @@ bun cli.ts kill-broker         # stop the broker daemon
 | `AGENT_HIVE_HOST` | `0.0.0.0` | Broker bind address |
 | `AGENT_HIVE_PORT` | `7899` | Broker port |
 | `AGENT_HIVE_DB` | `~/.agent-hive.db` | SQLite database path |
-| `HIVE_HOST` | `http://127.0.0.1:7899` | Broker URL (for MCP clients and bridges) |
+| `HIVE_HOST` | `http://127.0.0.1:7899` | Broker URL (for MCP clients and landlords) |
 | `AGENT_HIVE_TOKEN` | (from `~/.agent-hive.key`) | Override auth token |
 | `AGENT_HIVE_HARNESS` | `claude-code` | Harness identifier |
-| `BRIDGE_LOCAL_PORT` | `17900` | Bridge local HTTP gateway port |
+| `LANDLORD_LOCAL_PORT` | `17900` | Landlord local HTTP gateway port |
+| `COWORKER_PATH` | (auto-detected) | Override path to coworker binary for auto MCP config |
 | `OPENAI_API_KEY` | — | Enables auto-summary on startup |
 
 ---
@@ -332,7 +338,7 @@ echo "my-custom-name" > .agent-hive/name  # override
 ## Requirements
 
 - [Bun](https://bun.sh) v1.1+ — broker, TypeScript server, dashboard
-- Rust + Cargo — for the Rust MCP server and bridge binary
+- Rust + Cargo — for the Rust MCP server and landlord binary
 - Claude Code v2.1.80+ — for `--dangerously-load-development-channels`
 
 ---
