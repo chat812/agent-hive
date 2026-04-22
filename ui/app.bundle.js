@@ -31282,6 +31282,9 @@ function TerminalPanel({ sessionId, name, ws: ws2, onClose, onTerminalReady, onR
   };
   return /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
     className: "terminal-panel",
+    draggable,
+    onDragStart,
+    onDragOver,
     children: [
       /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
         className: "terminal-panel-header",
@@ -31448,6 +31451,37 @@ function Dashboard({ masterToken }) {
   const [openTerminals, setOpenTerminals] = import_react.useState(new Set);
   const [showSpawnDialog, setShowSpawnDialog] = import_react.useState(false);
   const [terminalNames, setTerminalNames] = import_react.useState({});
+  const [terminalOrder, setTerminalOrder] = import_react.useState([]);
+  const sortedTerminalIds = import_react.useMemo(() => {
+    const set = new Set(openTerminals);
+    const ordered = terminalOrder.filter((id) => set.has(id));
+    for (const id of openTerminals) {
+      if (!ordered.includes(id))
+        ordered.push(id);
+    }
+    return ordered;
+  }, [openTerminals, terminalOrder]);
+  const dragTerminalId = import_react.useRef(null);
+  const handleTerminalDragStart = import_react.useCallback((id) => {
+    dragTerminalId.current = id;
+  }, []);
+  const handleTerminalDragOver = import_react.useCallback((e, targetId) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    const src = dragTerminalId.current;
+    if (!src || src === targetId)
+      return;
+    setTerminalOrder((prev) => {
+      const list = prev.length ? [...prev] : sortedTerminalIds;
+      const srcIdx = list.indexOf(src);
+      const tgtIdx = list.indexOf(targetId);
+      if (srcIdx === -1 || tgtIdx === -1)
+        return prev;
+      list.splice(srcIdx, 1);
+      list.splice(tgtIdx, 0, src);
+      return list;
+    });
+  }, [sortedTerminalIds]);
   const wsRef = import_react.useRef(null);
   const [, setTick] = import_react.useState(0);
   const outputBuffers = import_react.useRef({});
@@ -31880,7 +31914,7 @@ function Dashboard({ masterToken }) {
                 children: "No active terminals"
               }, undefined, false, undefined, this) : /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
                 className: "sidebar-terminals",
-                children: Array.from(openTerminals).map((sessionId) => {
+                children: sortedTerminalIds.map((sessionId) => {
                   const peer = peers.find((p) => p.id === sessionId);
                   const landlord = peer?.bridge_id ? landlords.find((l3) => l3.id === peer.bridge_id) : null;
                   const landlordLabel = landlord ? ` (${landlord.hostname || landlord.id})` : "";
@@ -32132,7 +32166,7 @@ function Dashboard({ masterToken }) {
                     children: openTerminals.size === 0 ? /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
                       className: "empty",
                       children: "No active terminals. Click + Hire Worker to hire an agent."
-                    }, undefined, false, undefined, this) : Array.from(openTerminals).map((sessionId) => {
+                    }, undefined, false, undefined, this) : sortedTerminalIds.map((sessionId) => {
                       const peer = peers.find((p) => p.id === sessionId);
                       const landlord = peer?.bridge_id ? landlords.find((l3) => l3.id === peer.bridge_id) : null;
                       const landlordLabel = landlord ? ` (${landlord.hostname || landlord.id})` : "";
@@ -32142,7 +32176,10 @@ function Dashboard({ masterToken }) {
                         ws: wsRef.current,
                         onClose: () => handleKillTerminal(sessionId),
                         onTerminalReady: handleTerminalReady,
-                        onRename: handleRenameTerminal
+                        onRename: handleRenameTerminal,
+                        draggable: true,
+                        onDragStart: () => handleTerminalDragStart(sessionId),
+                        onDragOver: (e) => handleTerminalDragOver(e, sessionId)
                       }, sessionId, false, undefined, this);
                     })
                   }, undefined, false, undefined, this)

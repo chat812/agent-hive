@@ -958,6 +958,9 @@ function TerminalPanel({ sessionId, name, ws, onClose, onTerminalReady, onRename
   onClose: () => void;
   onTerminalReady: (sessionId: string, term: Terminal, fit: FitAddon) => void;
   onRename?: (sessionId: string, newName: string) => void;
+  draggable?: boolean;
+  onDragStart?: () => void;
+  onDragOver?: (e: React.DragEvent) => void;
 }) {
   const termRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<TerminalPanelState | null>(null);
@@ -1055,7 +1058,12 @@ function TerminalPanel({ sessionId, name, ws, onClose, onTerminalReady, onRename
   };
 
   return (
-    <div className="terminal-panel">
+    <div
+      className="terminal-panel"
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+    >
       <div className="terminal-panel-header">
         {editing ? (
           <input
@@ -1152,6 +1160,35 @@ function Dashboard({ masterToken }: { masterToken: string }) {
   const [openTerminals, setOpenTerminals] = useState<Set<string>>(new Set());
   const [showSpawnDialog, setShowSpawnDialog] = useState(false);
   const [terminalNames, setTerminalNames] = useState<Record<string, string>>({});
+  const [terminalOrder, setTerminalOrder] = useState<string[]>([]);
+
+  // Sorted terminal IDs: respects drag-reordered order, new terminals appended at end
+  const sortedTerminalIds = useMemo(() => {
+    const set = new Set(openTerminals);
+    const ordered = terminalOrder.filter((id) => set.has(id));
+    for (const id of openTerminals) {
+      if (!ordered.includes(id)) ordered.push(id);
+    }
+    return ordered;
+  }, [openTerminals, terminalOrder]);
+
+  const dragTerminalId = useRef<string | null>(null);
+  const handleTerminalDragStart = useCallback((id: string) => { dragTerminalId.current = id; }, []);
+  const handleTerminalDragOver = useCallback((e: React.DragEvent, targetId: string) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    const src = dragTerminalId.current;
+    if (!src || src === targetId) return;
+    setTerminalOrder((prev) => {
+      const list = prev.length ? [...prev] : sortedTerminalIds;
+      const srcIdx = list.indexOf(src);
+      const tgtIdx = list.indexOf(targetId);
+      if (srcIdx === -1 || tgtIdx === -1) return prev;
+      list.splice(srcIdx, 1);
+      list.splice(tgtIdx, 0, src);
+      return list;
+    });
+  }, [sortedTerminalIds]);
   const wsRef = useRef<WebSocket | null>(null);
   const [, setTick] = useState(0); // force re-render for timeAgo
 
@@ -1559,7 +1596,7 @@ function Dashboard({ masterToken }: { masterToken: string }) {
             <div className="sidebar-empty">No active terminals</div>
           ) : (
             <div className="sidebar-terminals">
-              {Array.from(openTerminals).map((sessionId) => {
+              {sortedTerminalIds.map((sessionId) => {
                 const peer = peers.find((p) => p.id === sessionId);
                 const landlord = peer?.bridge_id ? landlords.find((l) => l.id === peer.bridge_id) : null;
                 const landlordLabel = landlord ? ` (${landlord.hostname || landlord.id})` : "";
@@ -1703,7 +1740,7 @@ function Dashboard({ masterToken }: { masterToken: string }) {
               {openTerminals.size === 0 ? (
                 <div className="empty">No active terminals. Click + Hire Worker to hire an agent.</div>
               ) : (
-                Array.from(openTerminals).map((sessionId) => {
+                sortedTerminalIds.map((sessionId) => {
                   const peer = peers.find((p) => p.id === sessionId);
                   const landlord = peer?.bridge_id ? landlords.find((l) => l.id === peer.bridge_id) : null;
                   const landlordLabel = landlord ? ` (${landlord.hostname || landlord.id})` : "";
@@ -1716,6 +1753,9 @@ function Dashboard({ masterToken }: { masterToken: string }) {
                       onClose={() => handleKillTerminal(sessionId)}
                       onTerminalReady={handleTerminalReady}
                       onRename={handleRenameTerminal}
+                      draggable
+                      onDragStart={() => handleTerminalDragStart(sessionId)}
+                      onDragOver={(e) => handleTerminalDragOver(e, sessionId)}
                     />
                   );
                 })
