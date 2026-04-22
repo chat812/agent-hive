@@ -85,7 +85,7 @@ db.run(`
   )
 `);
 
-insertChannel.run("main", new Date().toISOString());
+db.run("INSERT OR IGNORE INTO channels (name, created_at) VALUES (?, ?)", ["main", new Date().toISOString()]);
 
 db.run(`
   CREATE TABLE IF NOT EXISTS peer_last_channel (
