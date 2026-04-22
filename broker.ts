@@ -248,9 +248,8 @@ const wsAgents = new Map<string, any>(); // peerId → ServerWebSocket
 const wsLandlords = new Map<string, any>(); // landlordId → ServerWebSocket (approved)
 const wsPendingLandlords = new Map<string, any>(); // landlordId → ServerWebSocket (pending approval)
 
-// Terminal output buffer — stores recent output per session for dashboard reconnect
-const terminalBuffers = new Map<string, string[]>(); // sessionId → hex-encoded chunks (last 500)
-const TERMINAL_BUFFER_MAX = 500;
+// Terminal output buffer — stores all output per session for dashboard reconnect
+const terminalBuffers = new Map<string, string[]>(); // sessionId → hex-encoded chunks
 
 function pushToAgent(peerId: string, event: object): boolean {
   const ws = wsAgents.get(peerId);
@@ -1470,7 +1469,6 @@ case "/set-role": {
             let buf = terminalBuffers.get(payload.session_id);
             if (!buf) { buf = []; terminalBuffers.set(payload.session_id, buf); }
             buf.push(payload.data);
-            if (buf.length > TERMINAL_BUFFER_MAX) buf.splice(0, buf.length - TERMINAL_BUFFER_MAX);
             broadcast({ type: "terminal_output", session_id: payload.session_id, data: payload.data });
             return;
           }
