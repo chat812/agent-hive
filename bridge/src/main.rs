@@ -144,15 +144,28 @@ fn ensure_mcp_config(coworker_path: &str) {
     println!("Configured agent-hive MCP in {}", config_path.display());
 }
 
-const HARNESS_COMMANDS: &[&str] = &["freecc", "claude", "claude-code"];
+const ALLOWED_COMMANDS: &[&str] = &[
+    "freecc", "claude", "claude-code", "opencode", "codex", "cursor", "bun", "node",
+];
 
 fn is_harness_command(cmd: &str) -> bool {
-    // Extract the binary name from the path
     let name = std::path::Path::new(cmd)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(cmd);
-    HARNESS_COMMANDS.contains(&name)
+    ALLOWED_COMMANDS.contains(&name)
+}
+
+fn validate_spawn_command(cmd: &str) -> anyhow::Result<()> {
+    // Block path separators — only bare binary names allowed
+    if cmd.contains('/') || cmd.contains('\\') {
+        anyhow::bail!("Path separators not allowed in command: {}", cmd);
+    }
+    let base = cmd.split_whitespace().next().unwrap_or("");
+    if !is_harness_command(base) {
+        anyhow::bail!("Command not in whitelist: {} (allowed: {:?})", base, ALLOWED_COMMANDS);
+    }
+    Ok(())
 }
 
 #[tokio::main]

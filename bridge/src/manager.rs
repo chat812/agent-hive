@@ -29,6 +29,8 @@ impl AgentManager {
         args: Vec<String>,
         broker_tx: &Arc<Mutex<BrokerSender>>,
     ) -> Result<String> {
+        crate::validate_spawn_command(&cmd)?;
+
         // Auto-setup MCP config for harness commands
         if let Some(ref coworker) = self.coworker_path {
             if crate::is_harness_command(&cmd) {

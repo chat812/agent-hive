@@ -949,7 +949,7 @@ Bun.serve({
           return new Response("bridge_id required", { status: 400 });
         }
         const hostname = url.searchParams.get("hostname") || "";
-        const key = url.searchParams.get("key");
+        const key = req.headers.get("x-landlord-key") ?? url.searchParams.get("key");
         const token = url.searchParams.get("token");
         let isApproved = false;
 
@@ -1406,7 +1406,13 @@ case "/set-role": {
 
           // Spawn agent on bridge
           if (payload.type === "spawn_agent" && payload.cmd && payload.bridge_id) {
-            sendToLandlord(payload.bridge_id, { type: "spawn_agent", cmd: payload.cmd, args: payload.args || [] });
+            const ALLOWED_COMMANDS = ["freecc", "claude", "claude-code", "opencode", "codex", "cursor", "bun", "node"];
+            const base = String(payload.cmd).split(/\s+/)[0];
+            if (base.includes("/") || base.includes("\\") || !ALLOWED_COMMANDS.includes(base)) {
+              console.error(`[broker] Blocked spawn of disallowed command: ${base}`);
+            } else {
+              sendToLandlord(payload.bridge_id, { type: "spawn_agent", cmd: payload.cmd, args: payload.args || [] });
+            }
           }
 
           // Kill agent on bridge

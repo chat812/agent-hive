@@ -939,8 +939,10 @@ function connectWs() {
 
   function connect() {
     const token = myToken ?? "";
-    const wsUrl = BROKER_URL.replace(/^http/, "ws") + `/ws/agent?token=${encodeURIComponent(token)}`;
-    const ws = new WebSocket(wsUrl);
+    const wsUrl = BROKER_URL.replace(/^http/, "ws") + "/ws/agent";
+    const ws = new WebSocket(wsUrl, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
 
     ws.onopen = () => {
       wsConnected = true;

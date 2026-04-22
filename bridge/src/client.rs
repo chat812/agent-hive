@@ -56,14 +56,14 @@ pub async fn connect(
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
 > {
     let base = if broker_url.ends_with('/') { broker_url.to_string() } else { format!("{}/", broker_url) };
-    let url = match mutual_key {
-        Some(key) => format!("{}ws/landlord?bridge_id={}&key={}&hostname={}", base, bridge_id, key, hostname),
-        None => format!("{}ws/landlord?bridge_id={}&hostname={}", base, bridge_id, hostname),
-    };
+    let url = format!("{}ws/landlord?bridge_id={}&hostname={}", base, bridge_id, hostname);
     let mut request = url.into_client_request()?;
     // Remove permessage-deflate extension for compatibility
     let headers = request.headers_mut();
     headers.remove("Sec-WebSocket-Extensions");
+    if let Some(key) = mutual_key {
+        headers.insert("X-Landlord-Key", key.parse()?);
+    }
 
     let mut config = WebSocketConfig::default();
     config.max_message_size = Some(16 * 1024 * 1024);
