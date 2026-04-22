@@ -1,4 +1,4 @@
-name: Build
+name: Build & Release
 
 on:
   push:
@@ -80,3 +80,34 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: coworker/target/${{ matrix.target }}/release/${{ matrix.artifact }}
+
+  release:
+    name: Create Release
+    needs: [build-landlord, build-coworker]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/hydra'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+      - name: Flatten artifacts
+        run: find release-assets -type f -exec mv {} . \;
+      - name: Generate tag
+        id: tag
+        run: echo "tag=$(date +'%Y%m%d-%H%M')" >> $GITHUB_OUTPUT
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Build ${{ steps.tag.outputs.tag }}
+          body: |
+            Automated build from `${{ github.sha }}`
+          files: |
+            agent-hive-landlord-*
+            coworker-*
