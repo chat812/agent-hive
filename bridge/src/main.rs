@@ -123,12 +123,16 @@ fn ensure_mcp_config(coworker_path: &str) {
         return; // already configured
     }
 
+    // Resolve to absolute path so freecc can find the binary from any cwd
+    let abs_path = std::path::absolute(coworker_path)
+        .unwrap_or_else(|_| std::path::PathBuf::from(coworker_path));
+
     // Add agent-hive entry
     if config.get_mut("mcpServers").and_then(|v| v.as_object_mut()).is_none() {
         config["mcpServers"] = serde_json::json!({});
     }
     if let Some(servers) = config.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
-        servers.insert("agent-hive".to_string(), serde_json::json!({"command": coworker_path}));
+        servers.insert("agent-hive".to_string(), serde_json::json!({"command": abs_path.to_string_lossy()}));
     }
 
     let _ = std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap_or_default());
