@@ -1817,20 +1817,6 @@ header {
 .terminal-panel-header {
   display: flex;
   align-items: center;
-  cursor: grab;
-}
-
-.terminal-panel-header:active {
-  cursor: grabbing;
-}
-
-[draggable="true"] {
-  transition: opacity 0.15s;
-}
-
-[draggable="true"]:active {
-  opacity: 0.7;
-}
   gap: 8px;
   padding: 6px 10px;
   background: rgba(255, 255, 255, 0.03);

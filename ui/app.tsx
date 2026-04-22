@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createRoot } from "react-dom/client";
-import { createPortal } from "react-dom";
 import { marked } from "marked";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -138,7 +137,7 @@ function PeerCard({
 
   return (
     <>
-    {showRolePopup && createPortal(<RolePopup peer={peer} masterToken={masterToken} channels={channels} onClose={() => setShowRolePopup(false)} />, document.body)}
+    {showRolePopup && <RolePopup peer={peer} masterToken={masterToken} channels={channels} onClose={() => setShowRolePopup(false)} />}
     <div className={`peer-card ${isPending ? "pending" : ""} ${isOffline ? "offline" : ""}`}>
       <div className="peer-card-header">
         <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
@@ -553,13 +552,13 @@ function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterTo
         )}
       </div>
 
-      {activePeer && createPortal(
+      {activePeer && (
         <RolePopup
           peer={activePeer}
           masterToken={masterToken}
           channels={channels}
           onClose={() => setActivePeer(null)}
-        />, document.body
+        />
       )}
     </>
   );
@@ -1147,7 +1146,7 @@ function Dashboard({ masterToken }: { masterToken: string }) {
   const [channelFiles, setChannelFiles] = useState<Record<string, FileEntry[]>>({});
   const [landlords, setLandlords] = useState<LandlordInfo[]>([]);
   const [pendingLandlords, setPendingLandlords] = useState<LandlordInfo[]>([]);
-  const [openTerminals, setOpenTerminals] = useState<string[]>([]);
+  const [openTerminals, setOpenTerminals] = useState<Set<string>>(new Set());
   const [showSpawnDialog, setShowSpawnDialog] = useState(false);
   const [terminalNames, setTerminalNames] = useState<Record<string, string>>({});
   const wsRef = useRef<WebSocket | null>(null);
@@ -1177,7 +1176,7 @@ function Dashboard({ masterToken }: { masterToken: string }) {
           .filter((p: Peer) => p.bridge_id && p.bridge_id !== "" && p.status === "approved")
           .map((p: Peer) => p.id);
         if (terminalIds.length > 0) {
-          setOpenTerminals(terminalIds);
+          setOpenTerminals(new Set(terminalIds));
           // Buffer terminal history for replay when xterm instances mount
           const history = (event as any).terminal_history as Record<string, string[]> | undefined;
           if (history) {
@@ -1195,7 +1194,11 @@ function Dashboard({ masterToken }: { masterToken: string }) {
         });
         // Auto-open terminal for landlord-spawned agents
         if (event.type === "peer_joined" && event.peer.bridge_id) {
-          setOpenTerminals((prev) => prev.includes(event.peer.id) ? prev : [...prev, event.peer.id]);
+          setOpenTerminals((prev) => {
+            const next = new Set(prev);
+            next.add(event.peer.id);
+            return next;
+          });
         }
         break;
       case "peer_updated":
@@ -1317,7 +1320,11 @@ function Dashboard({ masterToken }: { masterToken: string }) {
         break;
       }
       case "agent_exited":
-        setOpenTerminals((prev) => prev.filter((id) => id !== event.session_id));
+        setOpenTerminals((prev) => {
+          const next = new Set(prev);
+          next.delete(event.session_id);
+          return next;
+        });
         // Clean up terminal instance
         const exitedInst = terminalInstances.current[event.session_id];
         if (exitedInst) { exitedInst.term.dispose(); delete terminalInstances.current[event.session_id]; }
@@ -1422,7 +1429,11 @@ function Dashboard({ masterToken }: { masterToken: string }) {
     if (inst) { delete terminalInstances.current[sessionId]; }
     delete outputBuffers.current[sessionId];
     setTerminalNames((prev) => { const next = { ...prev }; delete next[sessionId]; return next; });
-    setOpenTerminals((prev) => prev.filter((id) => id !== sessionId));
+    setOpenTerminals((prev) => {
+      const next = new Set(prev);
+      next.delete(sessionId);
+      return next;
+    });
   }, []);
 
   const handleTerminalReady = useCallback((sessionId: string, term: Terminal, fit: FitAddon) => {
@@ -1539,13 +1550,13 @@ function Dashboard({ masterToken }: { masterToken: string }) {
         <div className="sidebar-section">
           <div className="sidebar-section-header">
             Terminals
-            <span className="count">{openTerminals.length}</span>
+            <span className="count">{openTerminals.size}</span>
           </div>
-          {openTerminals.length === 0 ? (
+          {openTerminals.size === 0 ? (
             <div className="sidebar-empty">No active terminals</div>
           ) : (
             <div className="sidebar-terminals">
-              {openTerminals.map((sessionId) => {
+              {Array.from(openTerminals).map((sessionId) => {
                 const peer = peers.find((p) => p.id === sessionId);
                 const landlord = peer?.bridge_id ? landlords.find((l) => l.id === peer.bridge_id) : null;
                 const landlordLabel = landlord ? ` (${landlord.hostname || landlord.id})` : "";
@@ -1683,45 +1694,26 @@ function Dashboard({ masterToken }: { masterToken: string }) {
           <div className="section section-terminals">
             <div className="section-header">
               Terminals
-              <span className="count">{openTerminals.length}</span>
+              <span className="count">{openTerminals.size}</span>
             </div>
             <div className="terminal-area">
-              {openTerminals.length === 0 ? (
+              {openTerminals.size === 0 ? (
                 <div className="empty">No active terminals. Click + Hire Worker to hire an agent.</div>
               ) : (
-                openTerminals.map((sessionId, index) => {
+                Array.from(openTerminals).map((sessionId) => {
                   const peer = peers.find((p) => p.id === sessionId);
                   const landlord = peer?.bridge_id ? landlords.find((l) => l.id === peer.bridge_id) : null;
                   const landlordLabel = landlord ? ` (${landlord.hostname || landlord.id})` : "";
                   return (
-                    <div key={sessionId}
-                      draggable
-                      onDragStart={(e) => {
-                        e.dataTransfer.setData("text/plain", String(index));
-                        e.dataTransfer.effectAllowed = "move";
-                      }}
-                      onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        const fromIdx = parseInt(e.dataTransfer.getData("text/plain"));
-                        if (fromIdx === index) return;
-                        setOpenTerminals((prev) => {
-                          const arr = [...prev];
-                          const [item] = arr.splice(fromIdx, 1);
-                          arr.splice(index, 0, item);
-                          return arr;
-                        });
-                      }}
-                    >
-                      <TerminalPanel
-                        sessionId={sessionId}
-                        name={`${terminalNames[sessionId] ?? peer?.name ?? sessionId}${landlordLabel}`}
-                        ws={wsRef.current}
-                        onClose={() => handleKillTerminal(sessionId)}
-                        onTerminalReady={handleTerminalReady}
-                        onRename={handleRenameTerminal}
-                      />
-                    </div>
+                    <TerminalPanel
+                      key={sessionId}
+                      sessionId={sessionId}
+                      name={`${terminalNames[sessionId] ?? peer?.name ?? sessionId}${landlordLabel}`}
+                      ws={wsRef.current}
+                      onClose={() => handleKillTerminal(sessionId)}
+                      onTerminalReady={handleTerminalReady}
+                      onRename={handleRenameTerminal}
+                    />
                   );
                 })
               )}
@@ -1730,12 +1722,12 @@ function Dashboard({ masterToken }: { masterToken: string }) {
         </div>
 
         {/* Hire worker dialog */}
-        {showSpawnDialog && createPortal(
+        {showSpawnDialog && (
           <HireWorkerDialog
             landlords={landlords}
             onHire={handleHire}
             onClose={() => setShowSpawnDialog(false)}
-          />, document.body
+          />
         )}
       </div>
 

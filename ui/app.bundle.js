@@ -17112,7 +17112,6 @@ var require_jsx_dev_runtime = __commonJS((exports, module) => {
 // ui/app.tsx
 var import_react = __toESM(require_react(), 1);
 var import_client = __toESM(require_client(), 1);
-var import_react_dom = __toESM(require_react_dom(), 1);
 
 // node_modules/marked/lib/marked.esm.js
 function z() {
@@ -30181,12 +30180,12 @@ function PeerCard({
   };
   return /* @__PURE__ */ jsx_dev_runtime.jsxDEV(jsx_dev_runtime.Fragment, {
     children: [
-      showRolePopup && import_react_dom.createPortal(/* @__PURE__ */ jsx_dev_runtime.jsxDEV(RolePopup, {
+      showRolePopup && /* @__PURE__ */ jsx_dev_runtime.jsxDEV(RolePopup, {
         peer,
         masterToken,
         channels,
         onClose: () => setShowRolePopup(false)
-      }, undefined, false, undefined, this), document.body),
+      }, undefined, false, undefined, this),
       /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
         className: `peer-card ${isPending ? "pending" : ""} ${isOffline ? "offline" : ""}`,
         children: [
@@ -30811,12 +30810,12 @@ function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterTo
           }, undefined, false, undefined, this)
         ]
       }, undefined, true, undefined, this),
-      activePeer && import_react_dom.createPortal(/* @__PURE__ */ jsx_dev_runtime.jsxDEV(RolePopup, {
+      activePeer && /* @__PURE__ */ jsx_dev_runtime.jsxDEV(RolePopup, {
         peer: activePeer,
         masterToken,
         channels,
         onClose: () => setActivePeer(null)
-      }, undefined, false, undefined, this), document.body)
+      }, undefined, false, undefined, this)
     ]
   }, undefined, true, undefined, this);
 }
@@ -31445,7 +31444,7 @@ function Dashboard({ masterToken }) {
   const [channelFiles, setChannelFiles] = import_react.useState({});
   const [landlords, setLandlords] = import_react.useState([]);
   const [pendingLandlords, setPendingLandlords] = import_react.useState([]);
-  const [openTerminals, setOpenTerminals] = import_react.useState([]);
+  const [openTerminals, setOpenTerminals] = import_react.useState(new Set);
   const [showSpawnDialog, setShowSpawnDialog] = import_react.useState(false);
   const [terminalNames, setTerminalNames] = import_react.useState({});
   const wsRef = import_react.useRef(null);
@@ -31466,7 +31465,7 @@ function Dashboard({ masterToken }) {
         setPendingLandlords(event.pending_landlords ?? []);
         const terminalIds = event.peers.filter((p) => p.bridge_id && p.bridge_id !== "" && p.status === "approved").map((p) => p.id);
         if (terminalIds.length > 0) {
-          setOpenTerminals(terminalIds);
+          setOpenTerminals(new Set(terminalIds));
           const history = event.terminal_history;
           if (history) {
             for (const [id, chunks] of Object.entries(history)) {
@@ -31482,7 +31481,11 @@ function Dashboard({ masterToken }) {
           return [...filtered, event.peer];
         });
         if (event.type === "peer_joined" && event.peer.bridge_id) {
-          setOpenTerminals((prev) => prev.includes(event.peer.id) ? prev : [...prev, event.peer.id]);
+          setOpenTerminals((prev) => {
+            const next = new Set(prev);
+            next.add(event.peer.id);
+            return next;
+          });
         }
         break;
       case "peer_updated":
@@ -31592,7 +31595,11 @@ function Dashboard({ masterToken }) {
         break;
       }
       case "agent_exited":
-        setOpenTerminals((prev) => prev.filter((id) => id !== event.session_id));
+        setOpenTerminals((prev) => {
+          const next = new Set(prev);
+          next.delete(event.session_id);
+          return next;
+        });
         const exitedInst = terminalInstances.current[event.session_id];
         if (exitedInst) {
           exitedInst.term.dispose();
@@ -31694,7 +31701,11 @@ function Dashboard({ masterToken }) {
       delete next[sessionId];
       return next;
     });
-    setOpenTerminals((prev) => prev.filter((id) => id !== sessionId));
+    setOpenTerminals((prev) => {
+      const next = new Set(prev);
+      next.delete(sessionId);
+      return next;
+    });
   }, []);
   const handleTerminalReady = import_react.useCallback((sessionId, term, fit) => {
     terminalInstances.current[sessionId] = { term, fit };
@@ -31859,16 +31870,16 @@ function Dashboard({ masterToken }) {
                   "Terminals",
                   /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
                     className: "count",
-                    children: openTerminals.length
+                    children: openTerminals.size
                   }, undefined, false, undefined, this)
                 ]
               }, undefined, true, undefined, this),
-              openTerminals.length === 0 ? /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+              openTerminals.size === 0 ? /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
                 className: "sidebar-empty",
                 children: "No active terminals"
               }, undefined, false, undefined, this) : /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
                 className: "sidebar-terminals",
-                children: openTerminals.map((sessionId) => {
+                children: Array.from(openTerminals).map((sessionId) => {
                   const peer = peers.find((p) => p.id === sessionId);
                   const landlord = peer?.bridge_id ? landlords.find((l3) => l3.id === peer.bridge_id) : null;
                   const landlordLabel = landlord ? ` (${landlord.hostname || landlord.id})` : "";
@@ -32111,49 +32122,26 @@ function Dashboard({ masterToken }) {
                       "Terminals",
                       /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
                         className: "count",
-                        children: openTerminals.length
+                        children: openTerminals.size
                       }, undefined, false, undefined, this)
                     ]
                   }, undefined, true, undefined, this),
                   /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
                     className: "terminal-area",
-                    children: openTerminals.length === 0 ? /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+                    children: openTerminals.size === 0 ? /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
                       className: "empty",
                       children: "No active terminals. Click + Hire Worker to hire an agent."
-                    }, undefined, false, undefined, this) : openTerminals.map((sessionId, index) => {
+                    }, undefined, false, undefined, this) : Array.from(openTerminals).map((sessionId) => {
                       const peer = peers.find((p) => p.id === sessionId);
                       const landlord = peer?.bridge_id ? landlords.find((l3) => l3.id === peer.bridge_id) : null;
                       const landlordLabel = landlord ? ` (${landlord.hostname || landlord.id})` : "";
-                      return /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
-                        draggable: true,
-                        onDragStart: (e) => {
-                          e.dataTransfer.setData("text/plain", String(index));
-                          e.dataTransfer.effectAllowed = "move";
-                        },
-                        onDragOver: (e) => {
-                          e.preventDefault();
-                          e.dataTransfer.dropEffect = "move";
-                        },
-                        onDrop: (e) => {
-                          e.preventDefault();
-                          const fromIdx = parseInt(e.dataTransfer.getData("text/plain"));
-                          if (fromIdx === index)
-                            return;
-                          setOpenTerminals((prev) => {
-                            const arr = [...prev];
-                            const [item] = arr.splice(fromIdx, 1);
-                            arr.splice(index, 0, item);
-                            return arr;
-                          });
-                        },
-                        children: /* @__PURE__ */ jsx_dev_runtime.jsxDEV(TerminalPanel, {
-                          sessionId,
-                          name: `${terminalNames[sessionId] ?? peer?.name ?? sessionId}${landlordLabel}`,
-                          ws: wsRef.current,
-                          onClose: () => handleKillTerminal(sessionId),
-                          onTerminalReady: handleTerminalReady,
-                          onRename: handleRenameTerminal
-                        }, undefined, false, undefined, this)
+                      return /* @__PURE__ */ jsx_dev_runtime.jsxDEV(TerminalPanel, {
+                        sessionId,
+                        name: `${terminalNames[sessionId] ?? peer?.name ?? sessionId}${landlordLabel}`,
+                        ws: wsRef.current,
+                        onClose: () => handleKillTerminal(sessionId),
+                        onTerminalReady: handleTerminalReady,
+                        onRename: handleRenameTerminal
                       }, sessionId, false, undefined, this);
                     })
                   }, undefined, false, undefined, this)
@@ -32161,11 +32149,11 @@ function Dashboard({ masterToken }) {
               }, undefined, true, undefined, this)
             ]
           }, undefined, true, undefined, this),
-          showSpawnDialog && import_react_dom.createPortal(/* @__PURE__ */ jsx_dev_runtime.jsxDEV(HireWorkerDialog, {
+          showSpawnDialog && /* @__PURE__ */ jsx_dev_runtime.jsxDEV(HireWorkerDialog, {
             landlords,
             onHire: handleHire,
             onClose: () => setShowSpawnDialog(false)
-          }, undefined, false, undefined, this), document.body)
+          }, undefined, false, undefined, this)
         ]
       }, undefined, true, undefined, this)
     ]
