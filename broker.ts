@@ -1556,6 +1556,12 @@ case "/set-role": {
       if (ws.data?.type === "agent") {
         const { peerId, name } = ws.data;
         wsAgents.delete(peerId);
+        // For landlord-spawned agents, notify dashboard to close terminal
+        const peer = selectPeerById.get(peerId) as Peer | null;
+        if (peer?.bridge_id) {
+          terminalBuffers.delete(peerId);
+          broadcast({ type: "agent_exited", session_id: peerId });
+        }
         console.error(`[broker] Agent WS disconnected: ${peerId} (${name})`);
       } else if (ws.data?.type === "landlord") {
         const { bridgeId, approved } = ws.data;
