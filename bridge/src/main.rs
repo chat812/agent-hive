@@ -127,6 +127,11 @@ fn ensure_mcp_config(coworker_path: &str) {
     let abs_path = std::path::absolute(coworker_path)
         .unwrap_or_else(|_| std::path::PathBuf::from(coworker_path));
 
+    if !abs_path.exists() {
+        eprintln!("coworker binary not found: {}", abs_path.display());
+        return;
+    }
+
     // Add agent-hive entry
     if config.get_mut("mcpServers").and_then(|v| v.as_object_mut()).is_none() {
         config["mcpServers"] = serde_json::json!({});
