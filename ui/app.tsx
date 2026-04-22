@@ -1162,6 +1162,8 @@ function Dashboard({ masterToken }: { masterToken: string }) {
   const [showSpawnDialog, setShowSpawnDialog] = useState(false);
   const [terminalNames, setTerminalNames] = useState<Record<string, string>>({});
   const [terminalOrder, setTerminalOrder] = useState<string[]>([]);
+  const [activeTerminalId, setActiveTerminalId] = useState<string | null>(null);
+  const [terminalViewMode, setTerminalViewMode] = useState<"tab" | "grid">("tab");
 
   // Sorted terminal IDs: respects drag-reordered order, new terminals appended at end
   const sortedTerminalIds = useMemo(() => {
@@ -1172,6 +1174,15 @@ function Dashboard({ masterToken }: { masterToken: string }) {
     }
     return ordered;
   }, [openTerminals, terminalOrder]);
+
+  // Auto-select active terminal
+  useEffect(() => {
+    if (sortedTerminalIds.length === 0) {
+      setActiveTerminalId(null);
+    } else if (!activeTerminalId || !openTerminals.has(activeTerminalId)) {
+      setActiveTerminalId(sortedTerminalIds[0]);
+    }
+  }, [sortedTerminalIds, activeTerminalId, openTerminals]);
 
   const dragTerminalId = useRef<string | null>(null);
   const handleTerminalDragStart = useCallback((id: string) => { dragTerminalId.current = id; }, []);
@@ -1731,16 +1742,71 @@ function Dashboard({ masterToken }: { masterToken: string }) {
             }}
           />
 
-          {/* Terminal area — full width */}
+          {/* Terminal area — tab + grid hybrid */}
           <div className="section section-terminals">
             <div className="section-header">
               Terminals
               <span className="count">{openTerminals.size}</span>
+              {openTerminals.size > 1 && (
+                <button
+                  className="terminal-view-toggle"
+                  onClick={() => setTerminalViewMode(terminalViewMode === "tab" ? "grid" : "tab")}
+                  title={terminalViewMode === "tab" ? "Switch to grid view" : "Switch to tab view"}
+                >
+                  {terminalViewMode === "tab" ? "⊞" : "⊟"}
+                </button>
+              )}
             </div>
-            <div className="terminal-area">
+
+            {/* Tab bar */}
+            {openTerminals.size > 0 && (
+              <div className="terminal-tab-bar">
+                {sortedTerminalIds.map((sessionId) => {
+                  const peer = peers.find((p) => p.id === sessionId);
+                  const name = terminalNames[sessionId] ?? peer?.name ?? sessionId;
+                  const isActive = sessionId === activeTerminalId;
+                  return (
+                    <div
+                      key={sessionId}
+                      className={`terminal-tab${isActive ? " active" : ""}`}
+                      onClick={() => { setActiveTerminalId(sessionId); if (terminalViewMode === "grid") setTerminalViewMode("tab"); }}
+                    >
+                      <span className="terminal-tab-dot" />
+                      <span className="terminal-tab-name">{name}</span>
+                      <button
+                        className="terminal-tab-close"
+                        onClick={(e) => { e.stopPropagation(); handleKillTerminal(sessionId); }}
+                      >×</button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Terminal content */}
+            <div className={`terminal-area terminal-${terminalViewMode}`}>
               {openTerminals.size === 0 ? (
                 <div className="empty">No active terminals. Click + Hire Worker to hire an agent.</div>
+              ) : terminalViewMode === "tab" ? (
+                // Tab mode: only render active terminal, full height
+                activeTerminalId && (() => {
+                  const peer = peers.find((p) => p.id === activeTerminalId);
+                  const landlord = peer?.bridge_id ? landlords.find((l) => l.id === peer.bridge_id) : null;
+                  const landlordLabel = landlord ? ` (${landlord.hostname || landlord.id})` : "";
+                  return (
+                    <TerminalPanel
+                      key={activeTerminalId}
+                      sessionId={activeTerminalId}
+                      name={`${terminalNames[activeTerminalId] ?? peer?.name ?? activeTerminalId}${landlordLabel}`}
+                      ws={wsRef.current}
+                      onClose={() => handleKillTerminal(activeTerminalId)}
+                      onTerminalReady={handleTerminalReady}
+                      onRename={handleRenameTerminal}
+                    />
+                  );
+                })()
               ) : (
+                // Grid mode: render all terminals in scrollable grid
                 sortedTerminalIds.map((sessionId) => {
                   const peer = peers.find((p) => p.id === sessionId);
                   const landlord = peer?.bridge_id ? landlords.find((l) => l.id === peer.bridge_id) : null;

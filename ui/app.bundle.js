@@ -32518,6 +32518,8 @@ function Dashboard({ masterToken }) {
   const [showSpawnDialog, setShowSpawnDialog] = import_react.useState(false);
   const [terminalNames, setTerminalNames] = import_react.useState({});
   const [terminalOrder, setTerminalOrder] = import_react.useState([]);
+  const [activeTerminalId, setActiveTerminalId] = import_react.useState(null);
+  const [terminalViewMode, setTerminalViewMode] = import_react.useState("tab");
   const sortedTerminalIds = import_react.useMemo(() => {
     const set = new Set(openTerminals);
     const ordered = terminalOrder.filter((id) => set.has(id));
@@ -32527,6 +32529,13 @@ function Dashboard({ masterToken }) {
     }
     return ordered;
   }, [openTerminals, terminalOrder]);
+  import_react.useEffect(() => {
+    if (sortedTerminalIds.length === 0) {
+      setActiveTerminalId(null);
+    } else if (!activeTerminalId || !openTerminals.has(activeTerminalId)) {
+      setActiveTerminalId(sortedTerminalIds[0]);
+    }
+  }, [sortedTerminalIds, activeTerminalId, openTerminals]);
   const dragTerminalId = import_react.useRef(null);
   const handleTerminalDragStart = import_react.useCallback((id) => {
     dragTerminalId.current = id;
@@ -33224,15 +33233,66 @@ function Dashboard({ masterToken }) {
                       /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
                         className: "count",
                         children: openTerminals.size
+                      }, undefined, false, undefined, this),
+                      openTerminals.size > 1 && /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
+                        className: "terminal-view-toggle",
+                        onClick: () => setTerminalViewMode(terminalViewMode === "tab" ? "grid" : "tab"),
+                        title: terminalViewMode === "tab" ? "Switch to grid view" : "Switch to tab view",
+                        children: terminalViewMode === "tab" ? "⊞" : "⊟"
                       }, undefined, false, undefined, this)
                     ]
                   }, undefined, true, undefined, this),
+                  openTerminals.size > 0 && /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+                    className: "terminal-tab-bar",
+                    children: sortedTerminalIds.map((sessionId) => {
+                      const peer = peers.find((p) => p.id === sessionId);
+                      const name = terminalNames[sessionId] ?? peer?.name ?? sessionId;
+                      const isActive = sessionId === activeTerminalId;
+                      return /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+                        className: `terminal-tab${isActive ? " active" : ""}`,
+                        onClick: () => {
+                          setActiveTerminalId(sessionId);
+                          if (terminalViewMode === "grid")
+                            setTerminalViewMode("tab");
+                        },
+                        children: [
+                          /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                            className: "terminal-tab-dot"
+                          }, undefined, false, undefined, this),
+                          /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                            className: "terminal-tab-name",
+                            children: name
+                          }, undefined, false, undefined, this),
+                          /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
+                            className: "terminal-tab-close",
+                            onClick: (e) => {
+                              e.stopPropagation();
+                              handleKillTerminal(sessionId);
+                            },
+                            children: "×"
+                          }, undefined, false, undefined, this)
+                        ]
+                      }, sessionId, true, undefined, this);
+                    })
+                  }, undefined, false, undefined, this),
                   /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
-                    className: "terminal-area",
+                    className: `terminal-area terminal-${terminalViewMode}`,
                     children: openTerminals.size === 0 ? /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
                       className: "empty",
                       children: "No active terminals. Click + Hire Worker to hire an agent."
-                    }, undefined, false, undefined, this) : sortedTerminalIds.map((sessionId) => {
+                    }, undefined, false, undefined, this) : terminalViewMode === "tab" ? activeTerminalId && (() => {
+                      const peer = peers.find((p) => p.id === activeTerminalId);
+                      const landlord = peer?.bridge_id ? landlords.find((l3) => l3.id === peer.bridge_id) : null;
+                      const landlordLabel = landlord ? ` (${landlord.hostname || landlord.id})` : "";
+                      return /* @__PURE__ */ jsx_dev_runtime.jsxDEV(TerminalPanel, {
+                        sessionId: activeTerminalId,
+                        name: `${terminalNames[activeTerminalId] ?? peer?.name ?? activeTerminalId}${landlordLabel}`,
+                        ws: wsRef.current,
+                        onClose: () => handleKillTerminal(activeTerminalId),
+                        onTerminalReady: handleTerminalReady,
+                        onRename: handleRenameTerminal
+                      }, activeTerminalId, false, undefined, this);
+                    })() : sortedTerminalIds.map((sessionId) => {
                       const peer = peers.find((p) => p.id === sessionId);
                       const landlord = peer?.bridge_id ? landlords.find((l3) => l3.id === peer.bridge_id) : null;
                       const landlordLabel = landlord ? ` (${landlord.hostname || landlord.id})` : "";
