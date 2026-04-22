@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { marked } from "marked";
 import { Terminal } from "@xterm/xterm";
@@ -378,7 +379,7 @@ function RolePopup({ peer, masterToken, onClose, channels }: {
   const activePreset = PRESET_ROLES.find((r) => r.prompt === prompt)?.label ?? null;
   const otherChannels = (channels ?? []).filter((c) => c.name !== peer.channel);
 
-  return (
+  return createPortal(
     <div className="role-popup-overlay" onClick={onClose}>
       <div className="role-popup" onClick={(e) => e.stopPropagation()}>
         <div className="role-popup-header">
@@ -450,7 +451,8 @@ function RolePopup({ peer, masterToken, onClose, channels }: {
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -483,7 +485,7 @@ function MemoryValuePopup({ entry, masterToken, channel, onClose, onDelete }: {
     })();
   }, []);
 
-  return (
+  return createPortal(
     <div className="role-popup-overlay" onClick={onClose}>
       <div className="role-popup" onClick={(e) => e.stopPropagation()}>
         <div className="role-popup-header">
@@ -503,7 +505,8 @@ function MemoryValuePopup({ entry, masterToken, channel, onClose, onDelete }: {
           <button className="btn" onClick={onClose}>Close</button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
