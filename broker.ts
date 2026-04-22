@@ -475,9 +475,47 @@ function getPeerIdFromToken(authHeader: string | null): string | null {
 // --- Request handlers ---
 
 function handleRegister(body: RegisterRequest): RegisterResponse {
-  const id = generateId();
   const now = new Date().toISOString();
   const sessionToken = generateToken(32);
+
+  // If bridge pre-registered this peer, update it instead of creating duplicate
+  if (body.bridge_peer_id) {
+    const id = body.bridge_peer_id;
+    const existing = selectPeerById.get(id) as Peer | null;
+    if (existing) {
+      // Bridge registered first — update with real agent info
+      db.run("UPDATE peers SET name = ?, pid = ?, cwd = ?, git_root = ?, summary = ?, last_seen = ? WHERE id = ?",
+        [body.name ?? existing.name, body.pid, body.cwd ?? existing.cwd, body.git_root ?? existing.git_root, body.summary ?? "", now, id]);
+      insertToken.run(sessionToken, id, now);
+      const { role } = pushChannelRole(id, existing.channel || "main");
+      const peer = selectPeerById.get(id) as Peer;
+      broadcast({ type: "peer_updated", peer });
+      return { id, token: sessionToken, channel: existing.channel || "main", role };
+    } else {
+      // Agent registered before bridge — create with bridge's ID so bridge can find it later
+      const lastChannelRow = selectLastChannel.get(body.hostname, body.cwd) as { channel: string } | null;
+      const rejoinChannel = lastChannelRow?.channel ?? "main";
+      insertPeer.run(
+        id, body.name ?? "", body.pid, body.cwd, body.git_root ?? null, body.tty ?? null,
+        body.harness, body.hostname, body.summary, now, now
+      );
+      insertToken.run(sessionToken, id, now);
+      const known = isKnownPeer.get(body.hostname) as { 1: number } | null;
+      if (known) {
+        updateStatus.run("approved", id);
+        const { role } = pushChannelRole(id, rejoinChannel);
+        const peer = selectPeerById.get(id) as Peer;
+        broadcast({ type: "peer_joined", peer });
+        return { id, token: sessionToken, channel: rejoinChannel, role };
+      } else {
+        const peer = selectPeerById.get(id) as Peer;
+        broadcast({ type: "peer_pending", peer });
+        return { id, token: sessionToken, channel: rejoinChannel, role: "" };
+      }
+    }
+  }
+
+  const id = generateId();
 
   // Look up last channel before removing old records
   const lastChannelRow = selectLastChannel.get(body.hostname, body.cwd) as { channel: string } | null;
@@ -1459,16 +1497,17 @@ case "/set-role": {
           // Agent registration from bridge — auto-approve
           if (payload.type === "register") {
             const id = payload.id || generateId();
-            const sessionToken = generateToken(32);
             const now = new Date().toISOString();
             const peerName = payload.name || `agent-${id.slice(0, 4)}`;
+            const existing = selectPeerById.get(id) as Peer | null;
 
-            // Remove any existing registration for same PID+hostname
-            if (payload.pid && payload.hostname) {
-              const existingByPid = db
-                .query("SELECT id FROM peers WHERE pid = ? AND hostname = ?")
-                .get(payload.pid, payload.hostname) as { id: string } | null;
-              if (existingByPid) removePeer(existingByPid.id);
+            if (existing) {
+              // Agent already self-registered — just add bridge_id
+              db.run("UPDATE peers SET bridge_id = ?, status = 'approved', last_seen = ? WHERE id = ?", [bridgeId, now, id]);
+              const peer = { ...selectPeerById.get(id), bridge_id: bridgeId } as Peer;
+              broadcast({ type: "peer_updated", peer });
+              console.error(`[broker] Landlord linked to existing agent: ${peerName} (${id}) on landlord ${bridgeId}`);
+              return;
             }
 
             try {
@@ -1478,6 +1517,7 @@ case "/set-role": {
                 "", now, now
               );
               db.run("UPDATE peers SET bridge_id = ?, status = 'approved' WHERE id = ?", [bridgeId, id]);
+              const sessionToken = generateToken(32);
               insertToken.run(sessionToken, id, now);
             } catch (err: any) {
               console.error(`[broker] Bridge register error: ${err.message}`);

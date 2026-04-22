@@ -79,6 +79,7 @@ export interface RegisterRequest {
   harness: string;
   hostname: string;
   summary: string;
+  bridge_peer_id?: string;
 }
 
 export interface RegisterResponse {

@@ -2077,6 +2077,7 @@ async fn main() -> Result<()> {
     log(&format!("Name: {}", my_name));
 
     // Register with broker
+    let bridge_peer_id = env::var("AGENT_HIVE_PEER_ID").ok();
     let reg_body = serde_json::json!({
         "name": my_name,
         "pid": std::process::id(),
@@ -2086,6 +2087,7 @@ async fn main() -> Result<()> {
         "harness": harness,
         "hostname": my_hostname,
         "summary": "",
+        "bridge_peer_id": bridge_peer_id,
     });
 
     let reg: RegisterResponse = broker

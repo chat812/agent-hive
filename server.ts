@@ -1101,6 +1101,7 @@ async function main() {
     harness: HARNESS,
     hostname: myHostname,
     summary: initialSummary,
+    bridge_peer_id: process.env.AGENT_HIVE_PEER_ID ?? undefined,
   });
   myId = reg.id;
   myToken = reg.token; // use session token from now on
@@ -1223,6 +1224,7 @@ async function main() {
             harness: HARNESS,
             hostname: myHostname,
             summary: "",
+            bridge_peer_id: process.env.AGENT_HIVE_PEER_ID ?? undefined,
           });
           // Auto-approve if master key is available
           const masterKey = await readMasterKey();

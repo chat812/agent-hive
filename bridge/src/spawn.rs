@@ -37,6 +37,7 @@ impl AgentProcess {
             b.arg("/C");
             b.args(&all_args);
             b.env("HIVE_HOST", &hive_host);
+            b.env("AGENT_HIVE_PEER_ID", &id);
             b
         };
 
@@ -45,6 +46,7 @@ impl AgentProcess {
             let mut b = CommandBuilder::new(&cmd);
             b.args(&args);
             b.env("HIVE_HOST", &hive_host);
+            b.env("AGENT_HIVE_PEER_ID", &id);
             b
         };
 
