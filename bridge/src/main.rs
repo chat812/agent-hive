@@ -104,11 +104,10 @@ fn find_coworker_binary() -> Option<String> {
     None
 }
 
-/// Ensure .mcp.json exists in the current directory with the agent-hive entry.
-/// Ensure agent-hive MCP is configured globally in ~/.claude.json
+/// Ensure agent-hive MCP is configured globally in ~/.freecc.json
 fn ensure_mcp_config(coworker_path: &str) {
     let home = home_dir();
-    let config_path = home.join(".claude.json");
+    let config_path = home.join(".freecc.json");
 
     let mut config: serde_json::Value = if config_path.exists() {
         std::fs::read_to_string(&config_path)
