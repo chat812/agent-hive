@@ -951,7 +951,7 @@ const XTERM_THEME = {
 
 // --- Terminal Panel ---
 
-function TerminalPanel({ sessionId, name, ws, onClose, onTerminalReady, onRename }: {
+function TerminalPanel({ sessionId, name, ws, onClose, onTerminalReady, onRename, draggable, onDragStart, onDragOver }: {
   sessionId: string;
   name: string;
   ws: WebSocket | null;

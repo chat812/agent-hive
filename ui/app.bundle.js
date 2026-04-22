@@ -31195,7 +31195,7 @@ var XTERM_THEME = {
   brightCyan: "#7dcfff",
   brightWhite: "#c0caf5"
 };
-function TerminalPanel({ sessionId, name, ws: ws2, onClose, onTerminalReady, onRename }) {
+function TerminalPanel({ sessionId, name, ws: ws2, onClose, onTerminalReady, onRename, draggable, onDragStart, onDragOver }) {
   const termRef = import_react.useRef(null);
   const panelRef = import_react.useRef(null);
   const [editing, setEditing] = import_react.useState(false);
