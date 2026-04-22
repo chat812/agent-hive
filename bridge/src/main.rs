@@ -283,7 +283,7 @@ async fn main() -> Result<()> {
                                             let cmd = parts[1].clone();
                                             let args: Vec<String> = parts[2..].to_vec();
                                             let mut m = mgr.lock().await;
-                                            match m.spawn_agent(cmd, args, &broker_tx_clone).await {
+                                            match m.spawn_agent(cmd, args, None, &broker_tx_clone).await {
                                                 Ok(id) => println!("Spawned agent: {}", id),
                                                 Err(e) => eprintln!("Spawn failed: {}", e),
                                             }

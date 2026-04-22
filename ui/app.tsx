@@ -1091,12 +1091,13 @@ function TerminalPanel({ sessionId, name, ws, onClose, onTerminalReady, onRename
 
 function HireWorkerDialog({ landlords, onHire, onClose }: {
   landlords: LandlordInfo[];
-  onHire: (landlordId: string, cmd: string, args: string[]) => void;
+  onHire: (landlordId: string, cmd: string, args: string[], cwd: string) => void;
   onClose: () => void;
 }) {
   const [landlordId, setLandlordId] = useState(landlords[0]?.id ?? "");
   const [cmd, setCmd] = useState("freecc");
   const [args, setArgs] = useState("--dangerously-load-development-channels server:agent-hive");
+  const [cwd, setCwd] = useState(landlords[0]?.cwd ?? "");
   const cmdRef = useRef<HTMLInputElement>(null);
 
   const HARNESS_ARGS = "--dangerously-load-development-channels server:agent-hive";
@@ -1112,9 +1113,14 @@ function HireWorkerDialog({ landlords, onHire, onClose }: {
 
   useEffect(() => { cmdRef.current?.focus(); cmdRef.current?.select(); }, []);
 
+  useEffect(() => {
+    const selected = landlords.find(l => l.id === landlordId);
+    if (selected) setCwd(selected.cwd || "");
+  }, [landlordId, landlords]);
+
   const handleHire = () => {
     if (!cmd.trim()) return;
-    onHire(landlordId, cmd.trim(), args.trim() ? args.trim().split(/\s+/) : []);
+    onHire(landlordId, cmd.trim(), args.trim() ? args.trim().split(/\s+/) : [], cwd.trim());
     onClose();
   };
 
@@ -1136,6 +1142,9 @@ function HireWorkerDialog({ landlords, onHire, onClose }: {
         <label className="spawn-label">Arguments</label>
         <input className="spawn-input" value={args} onChange={(e) => setArgs(e.target.value)}
           placeholder="space-separated arguments (optional)" onKeyDown={(e) => { if (e.key === "Enter") handleHire(); if (e.key === "Escape") onClose(); }} />
+        <label className="spawn-label">Working Directory <span style={{ opacity: 0.5, fontWeight: 400 }}>(on bridge machine)</span></label>
+        <input className="spawn-input" value={cwd} onChange={(e) => setCwd(e.target.value)}
+          placeholder="Leave empty to use bridge's current directory" onKeyDown={(e) => { if (e.key === "Enter") handleHire(); if (e.key === "Escape") onClose(); }} />
         <div className="spawn-actions">
           <button className="spawn-cancel" onClick={onClose}>Cancel</button>
           <button className="spawn-ok" onClick={handleHire}>Hire</button>
@@ -1160,6 +1169,7 @@ function Dashboard({ masterToken }: { masterToken: string }) {
   const [pendingLandlords, setPendingLandlords] = useState<LandlordInfo[]>([]);
   const [openTerminals, setOpenTerminals] = useState<Set<string>>(new Set());
   const [showSpawnDialog, setShowSpawnDialog] = useState(false);
+  const [spawnError, setSpawnError] = useState<string | null>(null);
   const [terminalNames, setTerminalNames] = useState<Record<string, string>>({});
   const [terminalOrder, setTerminalOrder] = useState<string[]>([]);
   const [activeTerminalId, setActiveTerminalId] = useState<string | null>(null);
@@ -1382,6 +1392,10 @@ function Dashboard({ masterToken }: { masterToken: string }) {
         if (exitedInst) { exitedInst.term.dispose(); delete terminalInstances.current[event.session_id]; }
         delete outputBuffers.current[event.session_id];
         break;
+      case "spawn_error":
+        setSpawnError(event.error);
+        setTimeout(() => setSpawnError(null), 5000);
+        break;
       case "landlord_update":
         setLandlords(event.landlords ?? []);
         break;
@@ -1466,9 +1480,9 @@ function Dashboard({ masterToken }: { masterToken: string }) {
     } catch {}
   }, [masterToken]);
 
-  const handleHire = useCallback((landlordId: string, cmd: string, args: string[]) => {
+  const handleHire = useCallback((landlordId: string, cmd: string, args: string[], cwd: string) => {
     if (wsRef.current && wsRef.current.readyState === 1) {
-      wsRef.current.send(JSON.stringify({ type: "spawn_agent", bridge_id: landlordId, cmd, args }));
+      wsRef.current.send(JSON.stringify({ type: "spawn_agent", bridge_id: landlordId, cmd, args, cwd }));
     }
   }, []);
 
@@ -1838,6 +1852,14 @@ function Dashboard({ masterToken }: { masterToken: string }) {
             onHire={handleHire}
             onClose={() => setShowSpawnDialog(false)}
           />
+        )}
+
+        {/* Spawn error toast */}
+        {spawnError && (
+          <div className="toast-error" onClick={() => setSpawnError(null)}>
+            <span className="toast-error-icon">!</span>
+            {spawnError}
+          </div>
         )}
       </div>
 

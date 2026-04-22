@@ -143,6 +143,7 @@ export interface LandlordInfo {
   id: string;
   agents: number;
   hostname: string;
+  cwd: string;
   status: "pending" | "approved" | "rejected";
 }
 
@@ -168,4 +169,5 @@ export type WsEvent =
   | { type: "landlord_update"; landlords: LandlordInfo[] }
   | { type: "landlord_pending"; landlord: LandlordInfo }
   | { type: "landlord_approved"; landlord: LandlordInfo }
-  | { type: "landlord_rejected"; landlord_id: string };
+  | { type: "landlord_rejected"; landlord_id: string }
+  | { type: "spawn_error"; error: string };

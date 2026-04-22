@@ -56,7 +56,8 @@ pub async fn connect(
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
 > {
     let base = if broker_url.ends_with('/') { broker_url.to_string() } else { format!("{}/", broker_url) };
-    let url = format!("{}ws/landlord?bridge_id={}&hostname={}", base, bridge_id, hostname);
+    let url = format!("{}ws/landlord?bridge_id={}&hostname={}&cwd={}", base, bridge_id, hostname,
+        urlencoding::encode(&std::env::current_dir().unwrap_or_default().to_string_lossy()));
     let mut request = url.into_client_request()?;
     // Remove permessage-deflate extension for compatibility
     let headers = request.headers_mut();
@@ -150,11 +151,20 @@ async fn handle_broker_message(
                 .and_then(|v| v.as_array())
                 .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
                 .unwrap_or_default();
+            let cwd = msg.get("cwd").and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from);
             if !cmd.is_empty() {
                 let mut m = mgr.lock().await;
-                match m.spawn_agent(cmd, args, broker_tx).await {
+                match m.spawn_agent(cmd, args, cwd, broker_tx).await {
                     Ok(id) => println!("Spawned agent from broker request: {}", id),
-                    Err(e) => eprintln!("Spawn from broker failed: {}", e),
+                    Err(e) => {
+                        eprintln!("Spawn from broker failed: {}", e);
+                        broker_tx.lock().await.send(&serde_json::json!({
+                            "type": "spawn_error",
+                            "error": format!("{}", e),
+                        })).await;
+                    }
                 }
             }
             false

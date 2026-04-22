@@ -32399,6 +32399,7 @@ function HireWorkerDialog({ landlords, onHire, onClose }) {
   const [landlordId, setLandlordId] = import_react.useState(landlords[0]?.id ?? "");
   const [cmd, setCmd] = import_react.useState("freecc");
   const [args, setArgs] = import_react.useState("--dangerously-load-development-channels server:agent-hive");
+  const [cwd, setCwd] = import_react.useState(landlords[0]?.cwd ?? "");
   const cmdRef = import_react.useRef(null);
   const HARNESS_ARGS = "--dangerously-load-development-channels server:agent-hive";
   const HARNESS_COMMANDS = new Set(["freecc", "claude", "claude-code"]);
@@ -32413,10 +32414,15 @@ function HireWorkerDialog({ landlords, onHire, onClose }) {
     cmdRef.current?.focus();
     cmdRef.current?.select();
   }, []);
+  import_react.useEffect(() => {
+    const selected = landlords.find((l3) => l3.id === landlordId);
+    if (selected)
+      setCwd(selected.cwd || "");
+  }, [landlordId, landlords]);
   const handleHire = () => {
     if (!cmd.trim())
       return;
-    onHire(landlordId, cmd.trim(), args.trim() ? args.trim().split(/\s+/) : []);
+    onHire(landlordId, cmd.trim(), args.trim() ? args.trim().split(/\s+/) : [], cwd.trim());
     onClose();
   };
   return /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
@@ -32484,6 +32490,28 @@ function HireWorkerDialog({ landlords, onHire, onClose }) {
               onClose();
           }
         }, undefined, false, undefined, this),
+        /* @__PURE__ */ jsx_dev_runtime.jsxDEV("label", {
+          className: "spawn-label",
+          children: [
+            "Working Directory ",
+            /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+              style: { opacity: 0.5, fontWeight: 400 },
+              children: "(on bridge machine)"
+            }, undefined, false, undefined, this)
+          ]
+        }, undefined, true, undefined, this),
+        /* @__PURE__ */ jsx_dev_runtime.jsxDEV("input", {
+          className: "spawn-input",
+          value: cwd,
+          onChange: (e) => setCwd(e.target.value),
+          placeholder: "Leave empty to use bridge's current directory",
+          onKeyDown: (e) => {
+            if (e.key === "Enter")
+              handleHire();
+            if (e.key === "Escape")
+              onClose();
+          }
+        }, undefined, false, undefined, this),
         /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
           className: "spawn-actions",
           children: [
@@ -32516,6 +32544,7 @@ function Dashboard({ masterToken }) {
   const [pendingLandlords, setPendingLandlords] = import_react.useState([]);
   const [openTerminals, setOpenTerminals] = import_react.useState(new Set);
   const [showSpawnDialog, setShowSpawnDialog] = import_react.useState(false);
+  const [spawnError, setSpawnError] = import_react.useState(null);
   const [terminalNames, setTerminalNames] = import_react.useState({});
   const [terminalOrder, setTerminalOrder] = import_react.useState([]);
   const [activeTerminalId, setActiveTerminalId] = import_react.useState(null);
@@ -32717,6 +32746,10 @@ function Dashboard({ masterToken }) {
         }
         delete outputBuffers.current[event.session_id];
         break;
+      case "spawn_error":
+        setSpawnError(event.error);
+        setTimeout(() => setSpawnError(null), 5000);
+        break;
       case "landlord_update":
         setLandlords(event.landlords ?? []);
         break;
@@ -32792,9 +32825,9 @@ function Dashboard({ masterToken }) {
       setMessages([]);
     } catch {}
   }, [masterToken]);
-  const handleHire = import_react.useCallback((landlordId, cmd, args) => {
+  const handleHire = import_react.useCallback((landlordId, cmd, args, cwd) => {
     if (wsRef.current && wsRef.current.readyState === 1) {
-      wsRef.current.send(JSON.stringify({ type: "spawn_agent", bridge_id: landlordId, cmd, args }));
+      wsRef.current.send(JSON.stringify({ type: "spawn_agent", bridge_id: landlordId, cmd, args, cwd }));
     }
   }, []);
   const handleKillTerminal = import_react.useCallback((sessionId) => {
@@ -33317,7 +33350,18 @@ function Dashboard({ masterToken }) {
             landlords,
             onHire: handleHire,
             onClose: () => setShowSpawnDialog(false)
-          }, undefined, false, undefined, this)
+          }, undefined, false, undefined, this),
+          spawnError && /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+            className: "toast-error",
+            onClick: () => setSpawnError(null),
+            children: [
+              /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                className: "toast-error-icon",
+                children: "!"
+              }, undefined, false, undefined, this),
+              spawnError
+            ]
+          }, undefined, true, undefined, this)
         ]
       }, undefined, true, undefined, this)
     ]

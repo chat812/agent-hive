@@ -27,6 +27,7 @@ impl AgentManager {
         &mut self,
         cmd: String,
         args: Vec<String>,
+        cwd: Option<String>,
         broker_tx: &Arc<Mutex<BrokerSender>>,
     ) -> Result<String> {
         crate::validate_spawn_command(&cmd)?;
@@ -38,7 +39,7 @@ impl AgentManager {
             }
         }
 
-        let mut agent = AgentProcess::spawn(cmd, args, &self.broker_url)?;
+        let mut agent = AgentProcess::spawn(cmd, args, &self.broker_url, cwd)?;
         let id = agent.id.clone();
 
         // Register with broker
