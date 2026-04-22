@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createRoot } from "react-dom/client";
+import { createPortal } from "react-dom";
 import { marked } from "marked";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -137,7 +138,7 @@ function PeerCard({
 
   return (
     <>
-    {showRolePopup && <RolePopup peer={peer} masterToken={masterToken} channels={channels} onClose={() => setShowRolePopup(false)} />}
+    {showRolePopup && createPortal(<RolePopup peer={peer} masterToken={masterToken} channels={channels} onClose={() => setShowRolePopup(false)} />, document.body)}
     <div className={`peer-card ${isPending ? "pending" : ""} ${isOffline ? "offline" : ""}`}>
       <div className="peer-card-header">
         <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
@@ -552,13 +553,13 @@ function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterTo
         )}
       </div>
 
-      {activePeer && (
+      {activePeer && createPortal(
         <RolePopup
           peer={activePeer}
           masterToken={masterToken}
           channels={channels}
           onClose={() => setActivePeer(null)}
-        />
+        />, document.body
       )}
     </>
   );
@@ -1729,12 +1730,12 @@ function Dashboard({ masterToken }: { masterToken: string }) {
         </div>
 
         {/* Hire worker dialog */}
-        {showSpawnDialog && (
+        {showSpawnDialog && createPortal(
           <HireWorkerDialog
             landlords={landlords}
             onHire={handleHire}
             onClose={() => setShowSpawnDialog(false)}
-          />
+          />, document.body
         )}
       </div>
 

@@ -17112,6 +17112,7 @@ var require_jsx_dev_runtime = __commonJS((exports, module) => {
 // ui/app.tsx
 var import_react = __toESM(require_react(), 1);
 var import_client = __toESM(require_client(), 1);
+var import_react_dom = __toESM(require_react_dom(), 1);
 
 // node_modules/marked/lib/marked.esm.js
 function z() {
@@ -30180,12 +30181,12 @@ function PeerCard({
   };
   return /* @__PURE__ */ jsx_dev_runtime.jsxDEV(jsx_dev_runtime.Fragment, {
     children: [
-      showRolePopup && /* @__PURE__ */ jsx_dev_runtime.jsxDEV(RolePopup, {
+      showRolePopup && import_react_dom.createPortal(/* @__PURE__ */ jsx_dev_runtime.jsxDEV(RolePopup, {
         peer,
         masterToken,
         channels,
         onClose: () => setShowRolePopup(false)
-      }, undefined, false, undefined, this),
+      }, undefined, false, undefined, this), document.body),
       /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
         className: `peer-card ${isPending ? "pending" : ""} ${isOffline ? "offline" : ""}`,
         children: [
@@ -30810,12 +30811,12 @@ function ChannelBlock({ ch, isExpanded, isSelected, onToggle, onRemove, masterTo
           }, undefined, false, undefined, this)
         ]
       }, undefined, true, undefined, this),
-      activePeer && /* @__PURE__ */ jsx_dev_runtime.jsxDEV(RolePopup, {
+      activePeer && import_react_dom.createPortal(/* @__PURE__ */ jsx_dev_runtime.jsxDEV(RolePopup, {
         peer: activePeer,
         masterToken,
         channels,
         onClose: () => setActivePeer(null)
-      }, undefined, false, undefined, this)
+      }, undefined, false, undefined, this), document.body)
     ]
   }, undefined, true, undefined, this);
 }
@@ -32160,11 +32161,11 @@ function Dashboard({ masterToken }) {
               }, undefined, true, undefined, this)
             ]
           }, undefined, true, undefined, this),
-          showSpawnDialog && /* @__PURE__ */ jsx_dev_runtime.jsxDEV(HireWorkerDialog, {
+          showSpawnDialog && import_react_dom.createPortal(/* @__PURE__ */ jsx_dev_runtime.jsxDEV(HireWorkerDialog, {
             landlords,
             onHire: handleHire,
             onClose: () => setShowSpawnDialog(false)
-          }, undefined, false, undefined, this)
+          }, undefined, false, undefined, this), document.body)
         ]
       }, undefined, true, undefined, this)
     ]
