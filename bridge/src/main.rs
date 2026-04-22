@@ -244,7 +244,7 @@ async fn main() -> Result<()> {
                     reader_done.store(true, std::sync::atomic::Ordering::Relaxed);
                 });
 
-                // Interactive command loop
+                // Interactive command loop (stdin commands + wait for broker disconnect)
                 loop {
                     tokio::select! {
                         line = lines.next_line() => {
@@ -296,8 +296,21 @@ async fn main() -> Result<()> {
                                         _ => println!("Unknown command: {}", parts[0]),
                                     }
                                 }
-                                Ok(None) => break,
-                                Err(_) => break,
+                                // stdin EOF (e.g. running as service) — don't break, just wait for broker
+                                Ok(None) => {
+                                    // No more stdin — just wait for broker disconnect
+                                    while !done_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                                    }
+                                    break;
+                                }
+                                Err(_) => {
+                                    // stdin error — same, wait for broker
+                                    while !done_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                                    }
+                                    break;
+                                }
                             }
                         }
                         _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
