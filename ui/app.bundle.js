@@ -31463,7 +31463,7 @@ function Dashboard({ masterToken }) {
         setChannels(event.channels ?? []);
         setLandlords(event.landlords ?? []);
         setPendingLandlords(event.pending_landlords ?? []);
-        const terminalIds = event.peers.filter((p) => p.bridge_id && p.status === "approved").map((p) => p.id);
+        const terminalIds = event.peers.filter((p) => p.bridge_id && p.bridge_id !== "" && p.status === "approved").map((p) => p.id);
         if (terminalIds.length > 0) {
           setOpenTerminals(new Set(terminalIds));
         }

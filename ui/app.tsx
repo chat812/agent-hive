@@ -1171,6 +1171,13 @@ function Dashboard({ masterToken }: { masterToken: string }) {
         setChannels(event.channels ?? []);
         setLandlords((event as any).landlords ?? []);
         setPendingLandlords((event as any).pending_landlords ?? []);
+        // Restore open terminals from peers with bridge_id
+        const terminalIds = event.peers
+          .filter((p: Peer) => p.bridge_id && p.bridge_id !== "" && p.status === "approved")
+          .map((p: Peer) => p.id);
+        if (terminalIds.length > 0) {
+          setOpenTerminals(new Set(terminalIds));
+        }
         break;
       case "peer_pending":
       case "peer_joined":
