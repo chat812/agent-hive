@@ -952,12 +952,13 @@ const XTERM_THEME = {
 
 // --- Terminal Panel ---
 
-function TerminalPanel({ sessionId, name, ws, onClose, onTerminalReady, onRename, draggable, onDragStart, onDragOver }: {
+function TerminalPanel({ sessionId, name, ws, onClose, onTerminalReady, onTerminalUnmount, onRename, draggable, onDragStart, onDragOver }: {
   sessionId: string;
   name: string;
   ws: WebSocket | null;
   onClose: () => void;
   onTerminalReady: (sessionId: string, term: Terminal, fit: FitAddon) => void;
+  onTerminalUnmount?: (sessionId: string) => void;
   onRename?: (sessionId: string, newName: string) => void;
   draggable?: boolean;
   onDragStart?: () => void;
@@ -1041,6 +1042,7 @@ function TerminalPanel({ sessionId, name, ws, onClose, onTerminalReady, onRename
     return () => {
       ro.disconnect();
       term.dispose();
+      onTerminalUnmount?.(sessionId);
     };
   }, [sessionId]);
 
@@ -1185,14 +1187,22 @@ function Dashboard({ masterToken }: { masterToken: string }) {
     return ordered;
   }, [openTerminals, terminalOrder]);
 
+  // Filter terminals by selected channel
+  const channelTerminalIds = useMemo(() => {
+    return sortedTerminalIds.filter((id) => {
+      const peer = peers.find((p) => p.id === id);
+      return !peer || peer.channel === selectedChannel;
+    });
+  }, [sortedTerminalIds, peers, selectedChannel]);
+
   // Auto-select active terminal
   useEffect(() => {
-    if (sortedTerminalIds.length === 0) {
+    if (channelTerminalIds.length === 0) {
       setActiveTerminalId(null);
-    } else if (!activeTerminalId || !openTerminals.has(activeTerminalId)) {
-      setActiveTerminalId(sortedTerminalIds[0]);
+    } else if (!activeTerminalId || !channelTerminalIds.includes(activeTerminalId)) {
+      setActiveTerminalId(channelTerminalIds[0]);
     }
-  }, [sortedTerminalIds, activeTerminalId, openTerminals]);
+  }, [channelTerminalIds, activeTerminalId]);
 
   const dragTerminalId = useRef<string | null>(null);
   const handleTerminalDragStart = useCallback((id: string) => { dragTerminalId.current = id; }, []);
@@ -1521,6 +1531,10 @@ function Dashboard({ masterToken }: { masterToken: string }) {
     setTerminalNames((prev) => ({ ...prev, [sessionId]: newName }));
   }, []);
 
+  const handleTerminalUnmount = useCallback((sessionId: string) => {
+    delete terminalInstances.current[sessionId];
+  }, []);
+
   useEffect(() => { loadFiles(selectedChannel); loadMemory(selectedChannel); }, [selectedChannel, loadFiles, loadMemory]);
 
   const pendingPeers = peers.filter((p) => p.status === "pending");
@@ -1616,13 +1630,13 @@ function Dashboard({ masterToken }: { masterToken: string }) {
         <div className="sidebar-section">
           <div className="sidebar-section-header">
             Terminals
-            <span className="count">{openTerminals.size}</span>
+            <span className="count">{channelTerminalIds.length}</span>
           </div>
-          {openTerminals.size === 0 ? (
+          {channelTerminalIds.length === 0 ? (
             <div className="sidebar-empty">No active terminals</div>
           ) : (
             <div className="sidebar-terminals">
-              {sortedTerminalIds.map((sessionId) => {
+              {channelTerminalIds.map((sessionId) => {
                 const peer = peers.find((p) => p.id === sessionId);
                 const landlord = peer?.bridge_id ? landlords.find((l) => l.id === peer.bridge_id) : null;
                 const landlordLabel = landlord ? ` (${landlord.hostname || landlord.id})` : "";
@@ -1741,7 +1755,7 @@ function Dashboard({ masterToken }: { masterToken: string }) {
                 const clamped = Math.max(10, Math.min(80, pct));
                 split.style.setProperty("--top-height", `${clamped}%`);
                 requestAnimationFrame(() => {
-                  for (const id of openTerminals) {
+                  for (const id of channelTerminalIds) {
                     const inst = terminalInstances.current[id];
                     if (inst) { try { inst.fit.fit(); } catch {} }
                   }
@@ -1760,8 +1774,8 @@ function Dashboard({ masterToken }: { masterToken: string }) {
           <div className="section section-terminals">
             <div className="section-header">
               Terminals
-              <span className="count">{openTerminals.size}</span>
-              {openTerminals.size > 1 && (
+              <span className="count">{channelTerminalIds.length}</span>
+              {channelTerminalIds.length > 1 && (
                 <button
                   className="terminal-view-toggle"
                   onClick={() => setTerminalViewMode(terminalViewMode === "tab" ? "grid" : "tab")}
@@ -1773,9 +1787,9 @@ function Dashboard({ masterToken }: { masterToken: string }) {
             </div>
 
             {/* Tab bar */}
-            {openTerminals.size > 0 && (
+            {channelTerminalIds.length > 0 && (
               <div className="terminal-tab-bar">
-                {sortedTerminalIds.map((sessionId) => {
+                {channelTerminalIds.map((sessionId) => {
                   const peer = peers.find((p) => p.id === sessionId);
                   const name = terminalNames[sessionId] ?? peer?.name ?? sessionId;
                   const isActive = sessionId === activeTerminalId;
@@ -1799,7 +1813,7 @@ function Dashboard({ masterToken }: { masterToken: string }) {
 
             {/* Terminal content */}
             <div className={`terminal-area terminal-${terminalViewMode}`}>
-              {openTerminals.size === 0 ? (
+              {channelTerminalIds.length === 0 ? (
                 <div className="empty">No active terminals. Click + Hire Worker to hire an agent.</div>
               ) : terminalViewMode === "tab" ? (
                 // Tab mode: only render active terminal, full height
@@ -1815,13 +1829,14 @@ function Dashboard({ masterToken }: { masterToken: string }) {
                       ws={wsRef.current}
                       onClose={() => handleKillTerminal(activeTerminalId)}
                       onTerminalReady={handleTerminalReady}
+                      onTerminalUnmount={handleTerminalUnmount}
                       onRename={handleRenameTerminal}
                     />
                   );
                 })()
               ) : (
                 // Grid mode: render all terminals in scrollable grid
-                sortedTerminalIds.map((sessionId) => {
+                channelTerminalIds.map((sessionId) => {
                   const peer = peers.find((p) => p.id === sessionId);
                   const landlord = peer?.bridge_id ? landlords.find((l) => l.id === peer.bridge_id) : null;
                   const landlordLabel = landlord ? ` (${landlord.hostname || landlord.id})` : "";
@@ -1833,6 +1848,7 @@ function Dashboard({ masterToken }: { masterToken: string }) {
                       ws={wsRef.current}
                       onClose={() => handleKillTerminal(sessionId)}
                       onTerminalReady={handleTerminalReady}
+                      onTerminalUnmount={handleTerminalUnmount}
                       onRename={handleRenameTerminal}
                       draggable
                       onDragStart={() => handleTerminalDragStart(sessionId)}

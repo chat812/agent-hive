@@ -32261,7 +32261,7 @@ var XTERM_THEME = {
   brightCyan: "#7dcfff",
   brightWhite: "#c0caf5"
 };
-function TerminalPanel({ sessionId, name, ws: ws2, onClose, onTerminalReady, onRename, draggable, onDragStart, onDragOver }) {
+function TerminalPanel({ sessionId, name, ws: ws2, onClose, onTerminalReady, onTerminalUnmount, onRename, draggable, onDragStart, onDragOver }) {
   const termRef = import_react.useRef(null);
   const panelRef = import_react.useRef(null);
   const [editing, setEditing] = import_react.useState(false);
@@ -32332,6 +32332,7 @@ function TerminalPanel({ sessionId, name, ws: ws2, onClose, onTerminalReady, onR
     return () => {
       ro2.disconnect();
       term.dispose();
+      onTerminalUnmount?.(sessionId);
     };
   }, [sessionId]);
   const startRename = () => {
@@ -32558,13 +32559,19 @@ function Dashboard({ masterToken }) {
     }
     return ordered;
   }, [openTerminals, terminalOrder]);
+  const channelTerminalIds = import_react.useMemo(() => {
+    return sortedTerminalIds.filter((id) => {
+      const peer = peers.find((p) => p.id === id);
+      return !peer || peer.channel === selectedChannel;
+    });
+  }, [sortedTerminalIds, peers, selectedChannel]);
   import_react.useEffect(() => {
-    if (sortedTerminalIds.length === 0) {
+    if (channelTerminalIds.length === 0) {
       setActiveTerminalId(null);
-    } else if (!activeTerminalId || !openTerminals.has(activeTerminalId)) {
-      setActiveTerminalId(sortedTerminalIds[0]);
+    } else if (!activeTerminalId || !channelTerminalIds.includes(activeTerminalId)) {
+      setActiveTerminalId(channelTerminalIds[0]);
     }
-  }, [sortedTerminalIds, activeTerminalId, openTerminals]);
+  }, [channelTerminalIds, activeTerminalId]);
   const dragTerminalId = import_react.useRef(null);
   const handleTerminalDragStart = import_react.useCallback((id) => {
     dragTerminalId.current = id;
@@ -32866,6 +32873,9 @@ function Dashboard({ masterToken }) {
   const handleRenameTerminal = import_react.useCallback((sessionId, newName) => {
     setTerminalNames((prev) => ({ ...prev, [sessionId]: newName }));
   }, []);
+  const handleTerminalUnmount = import_react.useCallback((sessionId) => {
+    delete terminalInstances.current[sessionId];
+  }, []);
   import_react.useEffect(() => {
     loadFiles(selectedChannel);
     loadMemory(selectedChannel);
@@ -33013,16 +33023,16 @@ function Dashboard({ masterToken }) {
                   "Terminals",
                   /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
                     className: "count",
-                    children: openTerminals.size
+                    children: channelTerminalIds.length
                   }, undefined, false, undefined, this)
                 ]
               }, undefined, true, undefined, this),
-              openTerminals.size === 0 ? /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+              channelTerminalIds.length === 0 ? /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
                 className: "sidebar-empty",
                 children: "No active terminals"
               }, undefined, false, undefined, this) : /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
                 className: "sidebar-terminals",
-                children: sortedTerminalIds.map((sessionId) => {
+                children: channelTerminalIds.map((sessionId) => {
                   const peer = peers.find((p) => p.id === sessionId);
                   const landlord = peer?.bridge_id ? landlords.find((l3) => l3.id === peer.bridge_id) : null;
                   const landlordLabel = landlord ? ` (${landlord.hostname || landlord.id})` : "";
@@ -33238,7 +33248,7 @@ function Dashboard({ masterToken }) {
                     const clamped = Math.max(10, Math.min(80, pct));
                     split.style.setProperty("--top-height", `${clamped}%`);
                     requestAnimationFrame(() => {
-                      for (const id of openTerminals) {
+                      for (const id of channelTerminalIds) {
                         const inst = terminalInstances.current[id];
                         if (inst) {
                           try {
@@ -33265,9 +33275,9 @@ function Dashboard({ masterToken }) {
                       "Terminals",
                       /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
                         className: "count",
-                        children: openTerminals.size
+                        children: channelTerminalIds.length
                       }, undefined, false, undefined, this),
-                      openTerminals.size > 1 && /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
+                      channelTerminalIds.length > 1 && /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
                         className: "terminal-view-toggle",
                         onClick: () => setTerminalViewMode(terminalViewMode === "tab" ? "grid" : "tab"),
                         title: terminalViewMode === "tab" ? "Switch to grid view" : "Switch to tab view",
@@ -33275,9 +33285,9 @@ function Dashboard({ masterToken }) {
                       }, undefined, false, undefined, this)
                     ]
                   }, undefined, true, undefined, this),
-                  openTerminals.size > 0 && /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+                  channelTerminalIds.length > 0 && /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
                     className: "terminal-tab-bar",
-                    children: sortedTerminalIds.map((sessionId) => {
+                    children: channelTerminalIds.map((sessionId) => {
                       const peer = peers.find((p) => p.id === sessionId);
                       const name = terminalNames[sessionId] ?? peer?.name ?? sessionId;
                       const isActive = sessionId === activeTerminalId;
@@ -33310,7 +33320,7 @@ function Dashboard({ masterToken }) {
                   }, undefined, false, undefined, this),
                   /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
                     className: `terminal-area terminal-${terminalViewMode}`,
-                    children: openTerminals.size === 0 ? /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+                    children: channelTerminalIds.length === 0 ? /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
                       className: "empty",
                       children: "No active terminals. Click + Hire Worker to hire an agent."
                     }, undefined, false, undefined, this) : terminalViewMode === "tab" ? activeTerminalId && (() => {
@@ -33323,9 +33333,10 @@ function Dashboard({ masterToken }) {
                         ws: wsRef.current,
                         onClose: () => handleKillTerminal(activeTerminalId),
                         onTerminalReady: handleTerminalReady,
+                        onTerminalUnmount: handleTerminalUnmount,
                         onRename: handleRenameTerminal
                       }, activeTerminalId, false, undefined, this);
-                    })() : sortedTerminalIds.map((sessionId) => {
+                    })() : channelTerminalIds.map((sessionId) => {
                       const peer = peers.find((p) => p.id === sessionId);
                       const landlord = peer?.bridge_id ? landlords.find((l3) => l3.id === peer.bridge_id) : null;
                       const landlordLabel = landlord ? ` (${landlord.hostname || landlord.id})` : "";
@@ -33335,6 +33346,7 @@ function Dashboard({ masterToken }) {
                         ws: wsRef.current,
                         onClose: () => handleKillTerminal(sessionId),
                         onTerminalReady: handleTerminalReady,
+                        onTerminalUnmount: handleTerminalUnmount,
                         onRename: handleRenameTerminal,
                         draggable: true,
                         onDragStart: () => handleTerminalDragStart(sessionId),
