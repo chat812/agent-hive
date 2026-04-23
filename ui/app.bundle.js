@@ -29389,8 +29389,9 @@ ROSTER OF ROLES — recognize all of these when you list_peers:
 
 STARTUP:
 1. list_peers(scope: "channel") → identify agents in YOUR channel by role (Worker, Executor, Vuln Researcher, Vuln Validator, Sys Admin, Advisor). NEVER use scope "all" — you only coordinate peers in your own channel.
-2. If no agents at all → tell user "no agents available" and stop
-3. If Advisor is present AND goal is architecturally complex: send_message(advisor_id, "Planning [goal] — recommended approach?"), wait for reply before decomposing
+2. If no agents at all → hire_worker(cmd: "freecc") to spawn agents, then assign_role to set their role before assigning tasks. Respects budget.
+3. If not enough agents for the goal → FIRST check if you can reassign existing agents. Only hire if budget allows.
+4. If Advisor is present AND goal is architecturally complex: send_message(advisor_id, "Planning [goal] — recommended approach?"), wait for reply before decomposing
 4. If Sys Admin is present AND goal needs an environment: send_message(sysadmin_id, "Probe and report environment state") before assigning implementation tasks
 5. Decompose goal into tasks → memory_set("plan", full breakdown) + memory_set("assignments", "peer-name: task")
 6. Assign one task per agent — be specific per role:
@@ -29429,7 +29430,7 @@ VERIFICATION FAILURE (result doesn't meet criteria):
 - 2nd failure on same task: break it into 2–3 smaller atomic sub-tasks, assign each separately
 - 3rd+ failure: change approach entirely — prescribe a different implementation strategy; if this executor keeps failing, reassign to a different one
 - NEVER accept "can't be done" — there is always a smaller scope, a different approach, or a different executor
-- The only stopping condition for the entire goal: no executors exist at all (tell user explicitly)
+- If all executors fail or none exist → hire_worker(cmd: "freecc") + assign_role(agent_id, "Worker") to bring in fresh agents (respects budget)
 
 WHEN ALL TASKS VERIFIED:
 - memory_set("status", "DONE")
@@ -29448,7 +29449,20 @@ TOOL RESTRICTION — you may ONLY use these Agent Hive tools:
 - set_summary, list_channels, join_channel, leave_channel
 - force_stop, resume_work, report_issue
 - upload_file, download_file, upload_folder, download_folder, list_files
+- hire_worker — spawn a new agent on the best available landlord (auto-selects by CPU/RAM)
+- kill_agent — kill a stuck or unresponsive agent by peer ID
+- assign_role — assign a role to an agent (Worker, Executor, Vuln Researcher, Vuln Validator, Sys Admin, Advisor)
 Do NOT use any other MCP tools (remote-exec, filesystem, shell, decompilers, etc.). Those are for Workers, Executors, and specialists. You coordinate — you do not execute.
+
+TEAM BUILDING: When no agents are available or you need more, use hire_worker to spawn agents and assign_role to set their role before assigning tasks. Example: hire_worker(cmd: "freecc") → note the new agent ID → assign_role(agent_id, "Worker") → send task.
+
+BUDGET CONSTRAINT:
+- Each agent costs credits per their role: Worker/Executor=1, Sys Admin/Advisor=2, Vuln Researcher/Validator=3, Master=0
+- Your network has a total budget. You CANNOT exceed it.
+- When budget is exceeded: kill idle/stuck agents to free credits, or report to the user to increase the budget
+- PRIORITIZE reassigning existing agents before hiring new ones
+- If hire_worker returns "BUDGET EXCEEDED", do NOT retry — kill an agent first or report to user
+- Calculate the optimal team size for the task and hire accordingly within budget
 
 NEVER:
 - Use remote-exec, filesystem, shell, or any non-Agent-Hive tool — ever
@@ -31445,6 +31459,132 @@ function HireWorkerDialog({ landlords, onHire, onClose }) {
     }, undefined, true, undefined, this)
   }, undefined, false, undefined, this);
 }
+function BudgetBar({ budget, onEdit }) {
+  const pct = budget.total_budget > 0 ? Math.min(100, budget.running_cost / budget.total_budget * 100) : 0;
+  const overBudget = budget.running_cost > budget.total_budget;
+  return /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+    className: `budget-bar ${overBudget ? "over-budget" : ""}`,
+    onClick: onEdit,
+    title: "Click to edit budget",
+    children: [
+      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+        className: "budget-bar-fill",
+        style: { width: `${pct}%` }
+      }, undefined, false, undefined, this),
+      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+        className: "budget-bar-label",
+        children: [
+          budget.running_cost,
+          "/",
+          budget.total_budget,
+          " credits"
+        ]
+      }, undefined, true, undefined, this)
+    ]
+  }, undefined, true, undefined, this);
+}
+function BudgetSettingsDialog({ budget, masterToken, onClose }) {
+  const [totalBudget, setTotalBudget] = import_react.useState(budget.total_budget);
+  const [prices, setPrices] = import_react.useState({ ...budget.role_prices });
+  const [saving, setSaving] = import_react.useState(false);
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await fetch("/budget/set", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
+        body: JSON.stringify({ total_budget: totalBudget })
+      });
+      await fetch("/budget/set-prices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
+        body: JSON.stringify({ prices })
+      });
+    } finally {
+      setSaving(false);
+    }
+    onClose();
+  };
+  return import_react_dom.createPortal(/* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+    className: "dialog-overlay",
+    onClick: onClose,
+    children: /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+      className: "dialog-content budget-settings",
+      onClick: (e) => e.stopPropagation(),
+      children: [
+        /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+          className: "spawn-title",
+          children: "Budget Settings"
+        }, undefined, false, undefined, this),
+        /* @__PURE__ */ jsx_dev_runtime.jsxDEV("label", {
+          className: "budget-field",
+          children: [
+            "Total Budget (credits)",
+            /* @__PURE__ */ jsx_dev_runtime.jsxDEV("input", {
+              type: "number",
+              min: 0,
+              value: totalBudget,
+              onChange: (e) => setTotalBudget(Number(e.target.value))
+            }, undefined, false, undefined, this)
+          ]
+        }, undefined, true, undefined, this),
+        /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+          className: "budget-prices",
+          children: [
+            /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+              className: "budget-prices-header",
+              children: "Role Prices"
+            }, undefined, false, undefined, this),
+            Object.entries(prices).sort(([a], [b3]) => a.localeCompare(b3)).map(([label, price]) => /* @__PURE__ */ jsx_dev_runtime.jsxDEV("label", {
+              className: "budget-field budget-price-row",
+              children: [
+                /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                  children: label
+                }, undefined, false, undefined, this),
+                /* @__PURE__ */ jsx_dev_runtime.jsxDEV("input", {
+                  type: "number",
+                  min: 0,
+                  value: price,
+                  onChange: (e) => setPrices((p) => ({ ...p, [label]: Number(e.target.value) }))
+                }, undefined, false, undefined, this)
+              ]
+            }, label, true, undefined, this))
+          ]
+        }, undefined, true, undefined, this),
+        /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+          className: "budget-active",
+          children: /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+            children: [
+              "Running cost: ",
+              /* @__PURE__ */ jsx_dev_runtime.jsxDEV("strong", {
+                children: budget.running_cost
+              }, undefined, false, undefined, this),
+              " / ",
+              budget.total_budget,
+              " credits"
+            ]
+          }, undefined, true, undefined, this)
+        }, undefined, false, undefined, this),
+        /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+          className: "dialog-actions",
+          children: [
+            /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
+              className: "btn",
+              onClick: onClose,
+              children: "Cancel"
+            }, undefined, false, undefined, this),
+            /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
+              className: "btn btn-primary",
+              onClick: handleSave,
+              disabled: saving,
+              children: saving ? "Saving..." : "Save"
+            }, undefined, false, undefined, this)
+          ]
+        }, undefined, true, undefined, this)
+      ]
+    }, undefined, true, undefined, this)
+  }, undefined, false, undefined, this), document.body);
+}
 function Dashboard({ masterToken }) {
   const [peers, setPeers] = import_react.useState([]);
   const [messages, setMessages] = import_react.useState([]);
@@ -31460,6 +31600,8 @@ function Dashboard({ masterToken }) {
   const [showSpawnDialog, setShowSpawnDialog] = import_react.useState(false);
   const [terminalNames, setTerminalNames] = import_react.useState({});
   const [terminalOrder, setTerminalOrder] = import_react.useState([]);
+  const [budget, setBudget] = import_react.useState(null);
+  const [showBudgetDialog, setShowBudgetDialog] = import_react.useState(false);
   const sortedTerminalIds = import_react.useMemo(() => {
     const set = new Set(openTerminals);
     const ordered = terminalOrder.filter((id) => set.has(id));
@@ -31506,6 +31648,8 @@ function Dashboard({ masterToken }) {
         setChannels(event.channels ?? []);
         setLandlords(event.landlords ?? []);
         setPendingLandlords(event.pending_landlords ?? []);
+        if (event.budget)
+          setBudget(event.budget);
         const terminalIds = event.peers.filter((p) => p.bridge_id && p.bridge_id !== "" && p.status === "approved").map((p) => p.id);
         if (terminalIds.length > 0) {
           setOpenTerminals(new Set(terminalIds));
@@ -31662,6 +31806,9 @@ function Dashboard({ masterToken }) {
         break;
       case "landlord_rejected":
         setPendingLandlords((prev) => prev.filter((l3) => l3.id !== event.landlord_id));
+        break;
+      case "budget_update":
+        setBudget(event.budget);
         break;
     }
   }, []);
@@ -31990,6 +32137,10 @@ function Dashboard({ masterToken }) {
                 className: "abort-badge",
                 children: "⛔ ABORTED"
               }, undefined, false, undefined, this),
+              budget && /* @__PURE__ */ jsx_dev_runtime.jsxDEV(BudgetBar, {
+                budget,
+                onEdit: () => setShowBudgetDialog(true)
+              }, undefined, false, undefined, this),
               /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
                 className: "stats",
                 children: [
@@ -32233,6 +32384,11 @@ function Dashboard({ masterToken }) {
             landlords,
             onHire: handleHire,
             onClose: () => setShowSpawnDialog(false)
+          }, undefined, false, undefined, this),
+          showBudgetDialog && budget && /* @__PURE__ */ jsx_dev_runtime.jsxDEV(BudgetSettingsDialog, {
+            budget,
+            masterToken,
+            onClose: () => setShowBudgetDialog(false)
           }, undefined, false, undefined, this)
         ]
       }, undefined, true, undefined, this)

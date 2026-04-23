@@ -5,7 +5,7 @@ import { marked } from "marked";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
-import type { Peer, Message, Channel, ChannelRole, ChannelMemoryEntry, FileEntry, WsEvent, LandlordInfo } from "../shared/types.ts";
+import type { Peer, Message, Channel, ChannelRole, ChannelMemoryEntry, FileEntry, WsEvent, LandlordInfo, BudgetInfo } from "../shared/types.ts";
 import { PRESET_ROLES } from "./roles.ts";
 
 // --- Helpers ---
@@ -1152,6 +1152,77 @@ function HireWorkerDialog({ landlords, onHire, onClose }: {
   );
 }
 
+// --- Budget Bar ---
+
+function BudgetBar({ budget, onEdit }: { budget: BudgetInfo; onEdit: () => void }) {
+  const pct = budget.total_budget > 0
+    ? Math.min(100, (budget.running_cost / budget.total_budget) * 100)
+    : 0;
+  const overBudget = budget.running_cost > budget.total_budget;
+  return (
+    <div className={`budget-bar ${overBudget ? "over-budget" : ""}`} onClick={onEdit} title="Click to edit budget">
+      <div className="budget-bar-fill" style={{ width: `${pct}%` }} />
+      <span className="budget-bar-label">
+        {budget.running_cost}/{budget.total_budget} credits
+      </span>
+    </div>
+  );
+}
+
+function BudgetSettingsDialog({ budget, masterToken, onClose }: { budget: BudgetInfo; masterToken: string; onClose: () => void }) {
+  const [totalBudget, setTotalBudget] = useState(budget.total_budget);
+  const [prices, setPrices] = useState<Record<string, number>>({ ...budget.role_prices });
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await fetch("/budget/set", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${masterToken}` },
+        body: JSON.stringify({ total_budget: totalBudget }),
+      });
+      await fetch("/budget/set-prices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${masterToken}` },
+        body: JSON.stringify({ prices }),
+      });
+    } finally {
+      setSaving(false);
+    }
+    onClose();
+  };
+
+  return createPortal(
+    <div className="dialog-overlay" onClick={onClose}>
+      <div className="dialog-content budget-settings" onClick={(e) => e.stopPropagation()}>
+        <div className="spawn-title">Budget Settings</div>
+        <label className="budget-field">
+          Total Budget (credits)
+          <input type="number" min={0} value={totalBudget} onChange={(e) => setTotalBudget(Number(e.target.value))} />
+        </label>
+        <div className="budget-prices">
+          <div className="budget-prices-header">Role Prices</div>
+          {Object.entries(prices).sort(([a], [b]) => a.localeCompare(b)).map(([label, price]) => (
+            <label key={label} className="budget-field budget-price-row">
+              <span>{label}</span>
+              <input type="number" min={0} value={price} onChange={(e) => setPrices((p) => ({ ...p, [label]: Number(e.target.value) }))} />
+            </label>
+          ))}
+        </div>
+        <div className="budget-active">
+          <span>Running cost: <strong>{budget.running_cost}</strong> / {budget.total_budget} credits</span>
+        </div>
+        <div className="dialog-actions">
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving ? "Saving..." : "Save"}</button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 // --- Dashboard ---
 
 function Dashboard({ masterToken }: { masterToken: string }) {
@@ -1169,6 +1240,8 @@ function Dashboard({ masterToken }: { masterToken: string }) {
   const [showSpawnDialog, setShowSpawnDialog] = useState(false);
   const [terminalNames, setTerminalNames] = useState<Record<string, string>>({});
   const [terminalOrder, setTerminalOrder] = useState<string[]>([]);
+  const [budget, setBudget] = useState<BudgetInfo | null>(null);
+  const [showBudgetDialog, setShowBudgetDialog] = useState(false);
 
   // Sorted terminal IDs: respects drag-reordered order, new terminals appended at end
   const sortedTerminalIds = useMemo(() => {
@@ -1219,6 +1292,7 @@ function Dashboard({ masterToken }: { masterToken: string }) {
         setChannels(event.channels ?? []);
         setLandlords((event as any).landlords ?? []);
         setPendingLandlords((event as any).pending_landlords ?? []);
+        if ((event as any).budget) setBudget((event as any).budget);
         // Restore open terminals from peers with bridge_id
         const terminalIds = event.peers
           .filter((p: Peer) => p.bridge_id && p.bridge_id !== "" && p.status === "approved")
@@ -1390,6 +1464,9 @@ function Dashboard({ masterToken }: { masterToken: string }) {
         break;
       case "landlord_rejected":
         setPendingLandlords((prev) => prev.filter((l) => l.id !== event.landlord_id));
+        break;
+      case "budget_update":
+        setBudget(event.budget);
         break;
     }
   }, []);
@@ -1637,6 +1714,9 @@ function Dashboard({ masterToken }: { masterToken: string }) {
           {selectedChannelData?.aborted && (
             <div className="abort-badge">⛔ ABORTED</div>
           )}
+          {budget && (
+            <BudgetBar budget={budget} onEdit={() => setShowBudgetDialog(true)} />
+          )}
           <div className="stats">
             <span>{onlinePeers.length} online{offlinePeers.length > 0 ? `, ${offlinePeers.length} offline` : ""}</span>
             {pendingPeers.length > 0 && (
@@ -1794,6 +1874,15 @@ function Dashboard({ masterToken }: { masterToken: string }) {
             landlords={landlords}
             onHire={handleHire}
             onClose={() => setShowSpawnDialog(false)}
+          />
+        )}
+
+        {/* Budget settings dialog */}
+        {showBudgetDialog && budget && (
+          <BudgetSettingsDialog
+            budget={budget}
+            masterToken={masterToken}
+            onClose={() => setShowBudgetDialog(false)}
           />
         )}
       </div>

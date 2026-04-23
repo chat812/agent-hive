@@ -237,6 +237,21 @@ impl BrokerClient {
         res.json().await.map_err(|e| format!("Admin parse error ({}): {}", path, e))
     }
 
+    async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, String> {
+        let token = self.token.lock().await.clone();
+        let mut req = self.http.get(format!("{}{}", self.broker_url, path));
+        if let Some(ref t) = token {
+            req = req.bearer_auth(t);
+        }
+        let res = req.send().await.map_err(|e| format!("GET {} failed: {}", path, e))?;
+        if !res.status().is_success() {
+            let status = res.status();
+            let text = res.text().await.unwrap_or_default();
+            return Err(format!("GET {} error: {} {}", path, status, text));
+        }
+        res.json().await.map_err(|e| format!("GET {} parse error: {}", path, e))
+    }
+
     async fn health_check(&self) -> bool {
         let url = format!("{}/health", self.broker_url);
         match self
@@ -476,6 +491,13 @@ struct ChannelPeerSummary {
 struct ChannelInfo {
     name: String,
     peers: Vec<ChannelPeerSummary>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BudgetInfo {
+    total_budget: u64,
+    running_cost: u64,
+    role_prices: std::collections::HashMap<String, u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1280,6 +1302,21 @@ impl CoworkerServer {
         Parameters(HireWorkerParams { cmd, args }): Parameters<HireWorkerParams>,
     ) -> String {
         self.touch_activity();
+
+        // Pre-flight budget check
+        match self.broker.get::<BudgetInfo>("/budget").await {
+            Ok(budget) => {
+                let default_cost = budget.role_prices.get("Worker").copied().unwrap_or(1);
+                if budget.running_cost + default_cost > budget.total_budget {
+                    return format!(
+                        "BUDGET EXCEEDED: {}/{} credits used. Cannot hire (costs {} credits). \
+                         Kill agents or ask the user to increase the budget via the dashboard.",
+                        budget.running_cost, budget.total_budget, default_cost
+                    );
+                }
+            }
+            Err(_) => {} // Budget endpoint unavailable (old broker) — proceed without check
+        }
 
         // Get landlords with stats
         let landlords: Vec<serde_json::Value> = match self.broker.admin_post("/admin/landlords", &serde_json::json!({})).await {

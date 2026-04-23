@@ -136,6 +136,15 @@ export interface PollMessagesResponse {
   messages: Message[];
 }
 
+// --- Budget types ---
+
+export interface BudgetInfo {
+  total_budget: number;
+  running_cost: number; // sum of active agent role prices
+  active_agents: { role: string; cost: number; count: number }[];
+  role_prices: Record<string, number>;
+}
+
 // --- Landlord types ---
 
 export interface LandlordInfo {
@@ -164,10 +173,11 @@ export type WsEvent =
   | { type: "file_deleted"; file_id: string; channel: string }
   | { type: "channel_aborted"; name: string }
   | { type: "channel_resumed"; name: string }
-  | { type: "snapshot"; peers: Peer[]; recent_messages: Message[]; channels: Channel[]; landlords?: LandlordInfo[]; pending_landlords?: LandlordInfo[]; terminal_history?: Record<string, string[]> }
+  | { type: "snapshot"; peers: Peer[]; recent_messages: Message[]; channels: Channel[]; landlords?: LandlordInfo[]; pending_landlords?: LandlordInfo[]; terminal_history?: Record<string, string[]>; budget?: BudgetInfo }
   | { type: "terminal_output"; session_id: string; data: string } // hex-encoded PTY output
   | { type: "agent_exited"; session_id: string }
   | { type: "landlord_update"; landlords: LandlordInfo[] }
   | { type: "landlord_pending"; landlord: LandlordInfo }
   | { type: "landlord_approved"; landlord: LandlordInfo }
-  | { type: "landlord_rejected"; landlord_id: string };
+  | { type: "landlord_rejected"; landlord_id: string }
+  | { type: "budget_update"; budget: BudgetInfo };
