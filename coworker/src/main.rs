@@ -457,6 +457,15 @@ struct KillAgentParams {
     agent_id: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+struct AssignRoleParams {
+    #[schemars(description = "The peer ID to assign the role to")]
+    #[serde(alias = "peer_id", alias = "id")]
+    agent_id: String,
+    #[schemars(description = "Role name: Master, Worker, Executor, Vuln Researcher, Vuln Validator, Sys Admin, Advisor — or a custom role name")]
+    role: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct ChannelPeerSummary {
     id: String,
@@ -1346,6 +1355,23 @@ impl CoworkerServer {
         })).await {
             Ok(v) => format!("Kill command sent: {:?}", v),
             Err(e) => format!("Error: {}", e),
+        }
+    }
+
+    #[tool(
+        name = "assign_role",
+        description = "Assign a role to an agent by peer ID. Available roles: Worker, Executor, Vuln Researcher, Vuln Validator, Sys Admin, Advisor. Requires master key."
+    )]
+    async fn assign_role(
+        &self,
+        Parameters(AssignRoleParams { agent_id, role }): Parameters<AssignRoleParams>,
+    ) -> String {
+        self.touch_activity();
+        match self.broker.admin_post::<serde_json::Value>("/set-peer-role", &serde_json::json!({
+            "peer_id": agent_id, "role": role
+        })).await {
+            Ok(_) => format!("Role '{}' assigned to {}", role, agent_id),
+            Err(e) => format!("Error assigning role: {}", e),
         }
     }
 }
