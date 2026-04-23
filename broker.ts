@@ -35,6 +35,7 @@ import {
   generateToken,
   extractBearerToken,
 } from "./shared/auth.ts";
+import { PRESET_ROLES } from "./ui/roles.ts";
 
 // --- Configuration ---
 
@@ -1297,7 +1298,10 @@ Bun.serve({
         return Response.json({ ok: true });
       }
       if (path === "/set-peer-role") {
-        const { peer_id, role } = body;
+        let { peer_id, role } = body;
+        // Resolve role label to full prompt (e.g. "Worker" → full Worker prompt)
+        const preset = PRESET_ROLES.find(r => r.label === role);
+        if (preset) role = preset.prompt;
         const peer = selectPeerById.get(peer_id) as Peer | null;
         if (!peer) return Response.json({ error: "Peer not found" }, { status: 404 });
         upsertPeerChannelRole.run(peer.name, peer.channel, role ?? "");
