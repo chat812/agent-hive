@@ -2137,3 +2137,116 @@ header {
   font-weight: 600;
 }
 .spawn-ok:hover { background: rgba(34, 197, 94, 0.25); }
+
+/* Budget bar */
+
+.budget-bar {
+  display: flex;
+  align-items: center;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+  position: relative;
+  min-width: 160px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.budget-bar:hover { background: var(--bg-tertiary, #2a2d35); }
+
+.budget-bar-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: var(--green);
+  opacity: 0.15;
+  border-radius: 4px;
+  transition: width 0.3s;
+}
+
+.budget-bar.over-budget .budget-bar-fill {
+  background: var(--red);
+  opacity: 0.25;
+}
+
+.budget-bar-label {
+  position: relative;
+  z-index: 1;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.budget-bar.over-budget .budget-bar-label {
+  color: var(--red);
+}
+
+/* Budget settings dialog */
+
+.budget-settings {
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.budget-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.budget-field input[type="number"] {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  color: var(--text-primary);
+  font-size: 14px;
+  width: 100%;
+}
+
+.budget-field input[type="number"]:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.budget-prices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.budget-prices-header {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  letter-spacing: 0.5px;
+}
+
+.budget-price-row {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.budget-price-row span {
+  font-size: 13px;
+}
+
+.budget-price-row input {
+  width: 60px !important;
+  text-align: center;
+}
+
+.budget-active {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}

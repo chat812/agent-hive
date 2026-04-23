@@ -29,6 +29,7 @@ import type {
   WsEvent,
   FileEntry,
   LandlordInfo,
+  BudgetInfo,
 } from "./shared/types.ts";
 import {
   loadOrCreateMasterKey,
@@ -240,6 +241,41 @@ db.run(`CREATE TABLE IF NOT EXISTS landlords (
 )`);
 db.run("UPDATE files SET path = filename WHERE path = ''");
 
+// --- Budget tables ---
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS budget (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    total_budget INTEGER NOT NULL DEFAULT 10
+  )
+`);
+db.run("INSERT OR IGNORE INTO budget (id, total_budget) VALUES (1, 10)");
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS role_prices (
+    label TEXT PRIMARY KEY,
+    price INTEGER NOT NULL
+  )
+`);
+
+const DEFAULT_ROLE_PRICES: Record<string, number> = {
+  "Master": 0,
+  "Worker": 1,
+  "Executor": 1,
+  "Sys Admin": 2,
+  "Advisor": 2,
+  "Vuln Researcher": 3,
+  "Vuln Validator": 3,
+};
+for (const [label, price] of Object.entries(DEFAULT_ROLE_PRICES)) {
+  db.run("INSERT OR IGNORE INTO role_prices (label, price) VALUES (?, ?)", [label, price]);
+}
+
+const rolePrices = new Map<string, number>();
+for (const row of db.query("SELECT label, price FROM role_prices").all() as { label: string; price: number }[]) {
+  rolePrices.set(row.label, row.price);
+}
+
 // --- WebSocket clients (dashboard) ---
 
 const wsClients = new Set<any>();
@@ -269,6 +305,53 @@ const landlordLastActivity = new Map<string, number>(); // landlordId → last m
 const LANDLORD_IDLE_TIMEOUT_MS = 30_000; // 30s — consider dead if no activity
 const landlordStats = new Map<string, { disk_free: number; ram_free: number; cpu_pct: number; ts: number }>();
 const landlordStatsBroadcast = new Map<string, number>(); // landlordId → last broadcast timestamp
+
+// --- Budget helpers ---
+
+function getRoleLabelForPeer(peer: Peer): string | null {
+  if (!peer.role) return null;
+  const preset = PRESET_ROLES.find(r => r.prompt === peer.role);
+  return preset?.label ?? null;
+}
+
+function getRunningCost(): number {
+  const approved = selectAllPeers.all() as Peer[];
+  let total = 0;
+  for (const peer of approved) {
+    const label = getRoleLabelForPeer(peer);
+    const price = label ? (rolePrices.get(label) ?? 1) : 1; // unassigned = Worker price
+    total += price;
+  }
+  return total;
+}
+
+function getBudgetInfo(): BudgetInfo {
+  const row = db.query("SELECT total_budget FROM budget WHERE id = 1").get() as { total_budget: number };
+  const total_budget = row.total_budget;
+  const running_cost = getRunningCost();
+
+  // Build active_agents breakdown
+  const approved = selectAllPeers.all() as Peer[];
+  const byRole = new Map<string, number>();
+  for (const peer of approved) {
+    const label = getRoleLabelForPeer(peer) ?? "(unassigned)";
+    byRole.set(label, (byRole.get(label) ?? 0) + 1);
+  }
+  const active_agents = Array.from(byRole.entries()).map(([role, count]) => ({
+    role,
+    cost: (rolePrices.get(role) ?? 1) * count,
+    count,
+  }));
+
+  const prices: Record<string, number> = {};
+  for (const [label, price] of rolePrices) prices[label] = price;
+
+  return { total_budget, running_cost, active_agents, role_prices: prices };
+}
+
+function broadcastBudgetUpdate() {
+  broadcast({ type: "budget_update", budget: getBudgetInfo() });
+}
 
 // Terminal output buffer — stores all output per session for dashboard reconnect
 const terminalBuffers = new Map<string, string[]>(); // sessionId → hex-encoded chunks
@@ -397,6 +480,7 @@ function removePeer(id: string) {
   db.run("DELETE FROM messages WHERE to_id = ? AND delivered = 0", [id]);
   db.run("DELETE FROM peers WHERE id = ?", [id]);
   broadcast({ type: "peer_left", peer_id: id });
+  broadcastBudgetUpdate();
 }
 
 // --- Prepared statements ---
@@ -1216,6 +1300,16 @@ Bun.serve({
       }
       const body = await req.json() as { bridge_id: string; cmd: string; args?: string[] };
       if (!body.bridge_id || !body.cmd) return Response.json({ error: "bridge_id and cmd required" }, { status: 400 });
+      // Budget gate: new agents cost Worker price (1 credit) until role assigned
+      const currentCost = getRunningCost();
+      const budgetRow = db.query("SELECT total_budget FROM budget WHERE id = 1").get() as { total_budget: number };
+      const defaultPrice = rolePrices.get("Worker") ?? 1;
+      if (currentCost + defaultPrice > budgetRow.total_budget) {
+        return Response.json({
+          ok: false,
+          error: `Budget exceeded: ${currentCost}/${budgetRow.total_budget} credits used. New agent costs ${defaultPrice} credits. Free up agents or increase budget.`,
+        }, { status: 402 });
+      }
       const ws = wsLandlords.get(body.bridge_id);
       if (!ws) return Response.json({ error: "Landlord not connected" }, { status: 404 });
       ws.send(JSON.stringify({ type: "spawn_agent", cmd: body.cmd, args: body.args || [] }));
@@ -1232,6 +1326,7 @@ Bun.serve({
       const ws = wsLandlords.get(body.bridge_id);
       if (!ws) return Response.json({ error: "Landlord not connected" }, { status: 404 });
       ws.send(JSON.stringify({ type: "kill_agent", session_id: body.session_id }));
+      // Budget will update when landlord confirms exit via agent_exited → removePeer
       return Response.json({ ok: true });
     }
 
@@ -1254,6 +1349,38 @@ Bun.serve({
         }
       }
       return Response.json({ ok: true, landlords: count });
+    }
+
+    // --- Budget endpoints ---
+
+    if (path === "/budget" && method === "GET") {
+      return Response.json(getBudgetInfo());
+    }
+
+    if (path === "/budget/set") {
+      if (!isMasterKey(authHeader)) return Response.json({ error: "Master key required" }, { status: 403 });
+      const body = await req.json() as { total_budget: number };
+      if (typeof body.total_budget !== "number" || body.total_budget < 0) {
+        return Response.json({ error: "total_budget must be a non-negative number" }, { status: 400 });
+      }
+      db.run("UPDATE budget SET total_budget = ? WHERE id = 1", [body.total_budget]);
+      broadcastBudgetUpdate();
+      return Response.json(getBudgetInfo());
+    }
+
+    if (path === "/budget/set-prices") {
+      if (!isMasterKey(authHeader)) return Response.json({ error: "Master key required" }, { status: 403 });
+      const body = await req.json() as { prices: Record<string, number> };
+      if (!body.prices || typeof body.prices !== "object") {
+        return Response.json({ error: "prices object required" }, { status: 400 });
+      }
+      for (const [label, price] of Object.entries(body.prices)) {
+        if (typeof price !== "number" || price < 0) continue;
+        db.run("INSERT OR REPLACE INTO role_prices (label, price) VALUES (?, ?)", [label, price]);
+        rolePrices.set(label, price);
+      }
+      broadcastBudgetUpdate();
+      return Response.json(getBudgetInfo());
     }
 
     if (path === "/file-delete") {
@@ -1309,6 +1436,7 @@ Bun.serve({
         const updated = selectPeerById.get(peer_id) as Peer;
         broadcast({ type: "peer_updated", peer: updated });
         if (role) pushToAgent(peer_id, { type: "role_changed", role, channel: peer.channel });
+        broadcastBudgetUpdate();
         return Response.json({ ok: true });
       }
     }
@@ -1523,7 +1651,7 @@ case "/set-role": {
           }
         }
 
-        ws.send(JSON.stringify({ type: "snapshot", peers, recent_messages, channels, landlords, pending_landlords: pendingLandlords, terminal_history } satisfies WsEvent));
+        ws.send(JSON.stringify({ type: "snapshot", peers, recent_messages, channels, landlords, pending_landlords: pendingLandlords, terminal_history, budget: getBudgetInfo() } satisfies WsEvent));
       }
     },
     message(ws: any, message: any) {
