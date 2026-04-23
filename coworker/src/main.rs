@@ -666,6 +666,7 @@ impl CoworkerServer {
         &self,
         Parameters(SetSummaryParams { summary }): Parameters<SetSummaryParams>,
     ) -> String {
+        self.touch_activity();
         let state = self.state.lock().await;
         let my_id = match &state.id {
             Some(id) => id.clone(),
@@ -736,6 +737,7 @@ impl CoworkerServer {
         &self,
         Parameters(ListChannelsParams {}): Parameters<ListChannelsParams>,
     ) -> String {
+        self.touch_activity();
         match self
             .broker
             .post::<Vec<ChannelInfo>>("/list-channels", &serde_json::json!({}))
@@ -770,6 +772,7 @@ impl CoworkerServer {
         &self,
         Parameters(JoinChannelParams { channel }): Parameters<JoinChannelParams>,
     ) -> String {
+        self.touch_activity();
         let state = self.state.lock().await;
         let my_id = match &state.id {
             Some(id) => id.clone(),
@@ -806,6 +809,7 @@ impl CoworkerServer {
         &self,
         Parameters(MemorySetParams { key, value }): Parameters<MemorySetParams>,
     ) -> String {
+        self.touch_activity();
         let state = self.state.lock().await;
         let my_id = match &state.id {
             Some(id) => id.clone(),
@@ -835,6 +839,7 @@ impl CoworkerServer {
         &self,
         Parameters(MemoryGetParams { key }): Parameters<MemoryGetParams>,
     ) -> String {
+        self.touch_activity();
         let state = self.state.lock().await;
         let channel = state.channel.clone();
         drop(state);
@@ -857,6 +862,7 @@ impl CoworkerServer {
         &self,
         Parameters(MemoryListParams {}): Parameters<MemoryListParams>,
     ) -> String {
+        self.touch_activity();
         let state = self.state.lock().await;
         let channel = state.channel.clone();
         drop(state);
@@ -893,6 +899,7 @@ impl CoworkerServer {
         &self,
         Parameters(MemoryDeleteParams { key }): Parameters<MemoryDeleteParams>,
     ) -> String {
+        self.touch_activity();
         let state = self.state.lock().await;
         let my_id = match &state.id {
             Some(id) => id.clone(),
@@ -916,6 +923,7 @@ impl CoworkerServer {
         &self,
         Parameters(LeaveChannelParams {}): Parameters<LeaveChannelParams>,
     ) -> String {
+        self.touch_activity();
         let state = self.state.lock().await;
         let my_id = match &state.id {
             Some(id) => id.clone(),
@@ -941,6 +949,7 @@ impl CoworkerServer {
         &self,
         Parameters(UploadFileParams { path, store_path }): Parameters<UploadFileParams>,
     ) -> String {
+        self.touch_activity();
         let p = std::path::Path::new(&path);
         let filename = p.file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -954,6 +963,7 @@ impl CoworkerServer {
         &self,
         Parameters(DownloadFileParams { file_id, store_path, save_path }): Parameters<DownloadFileParams>,
     ) -> String {
+        self.touch_activity();
         let fid = if let Some(id) = file_id {
             id
         } else if let Some(ref spath) = store_path {
@@ -995,6 +1005,7 @@ impl CoworkerServer {
         &self,
         _: Parameters<ListFilesParams>,
     ) -> String {
+        self.touch_activity();
         let channel = self.state.lock().await.channel.clone();
         match self.broker.post::<serde_json::Value>("/file-list", &serde_json::json!({ "channel": channel })).await {
             Ok(v) => {
@@ -1030,6 +1041,7 @@ impl CoworkerServer {
         &self,
         Parameters(UploadFolderParams { path, store_path }): Parameters<UploadFolderParams>,
     ) -> String {
+        self.touch_activity();
         let folder_path = std::path::Path::new(&path);
         if !folder_path.is_dir() {
             return format!("Not a directory: {}", path);
@@ -1112,6 +1124,7 @@ impl CoworkerServer {
         &self,
         Parameters(DownloadFolderParams { file_id, store_path, extract_to }): Parameters<DownloadFolderParams>,
     ) -> String {
+        self.touch_activity();
         let fid = if let Some(id) = file_id {
             id
         } else if let Some(ref spath) = store_path {
@@ -1167,6 +1180,7 @@ impl CoworkerServer {
         &self,
         Parameters(BroadcastParams { text }): Parameters<BroadcastParams>,
     ) -> String {
+        self.touch_activity();
         let from_id = match self.state.lock().await.id.clone() {
             Some(id) => id,
             None => return "Not registered".to_string(),
@@ -1185,6 +1199,7 @@ impl CoworkerServer {
 
     #[tool(description = "MASTER ONLY: Send an immediate abort signal to all workers in the channel. They will be notified on their next heartbeat (within 2s) to stop all current work and await further instructions.")]
     async fn force_stop(&self, _: Parameters<ListFilesParams>) -> String {
+        self.touch_activity();
         let channel = self.state.lock().await.channel.clone();
         match self.broker.post::<serde_json::Value>("/channel-abort", &serde_json::json!({
             "channel": channel,
@@ -1196,6 +1211,7 @@ impl CoworkerServer {
 
     #[tool(description = "MASTER ONLY: Clear the force-stop signal so workers can resume accepting tasks.")]
     async fn resume_work(&self, _: Parameters<ListFilesParams>) -> String {
+        self.touch_activity();
         let channel = self.state.lock().await.channel.clone();
         match self.broker.post::<serde_json::Value>("/channel-resume", &serde_json::json!({
             "channel": channel,
@@ -1275,14 +1291,21 @@ impl CoworkerServer {
             return "No landlords connected. Start a landlord first.".to_string();
         }
 
-        // Score: prefer lower CPU, more free RAM, more free disk
-        let best = landlords.iter().max_by(|a, b| {
-            let score = |l: &serde_json::Value| -> f64 {
-                let cpu = l.get("cpu_pct").and_then(|v| v.as_f64()).unwrap_or(50.0);
-                let ram = l.get("ram_free").and_then(|v| v.as_u64()).unwrap_or(0) as f64;
-                (100.0 - cpu) + (ram / 1e9) * 2.0
+        // Score: prefer lower CPU, more free RAM, fewer agents (tiebreaker)
+        let best = landlords.iter().min_by(|a, b| {
+            let agents_a = a.get("agents").and_then(|v| v.as_u64()).unwrap_or(0);
+            let agents_b = b.get("agents").and_then(|v| v.as_u64()).unwrap_or(0);
+            let cpu_a = a.get("cpu_pct").and_then(|v| v.as_f64()).unwrap_or(50.0);
+            let cpu_b = b.get("cpu_pct").and_then(|v| v.as_f64()).unwrap_or(50.0);
+            let ram_a = a.get("ram_free").and_then(|v| v.as_u64()).unwrap_or(0) as f64;
+            let ram_b = b.get("ram_free").and_then(|v| v.as_u64()).unwrap_or(0) as f64;
+            // Lower is better: agents weighted heavily, then CPU, then inverse RAM
+            let score = |agents: u64, cpu: f64, ram: f64| -> f64 {
+                agents as f64 * 100.0 + cpu + (1e9 / (ram + 1.0)) * 0.1
             };
-            score(a).partial_cmp(&score(b)).unwrap_or(std::cmp::Ordering::Equal)
+            let sa = score(agents_a, cpu_a, ram_a);
+            let sb = score(agents_b, cpu_b, ram_b);
+            sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
         });
 
         let landlord = match best {
