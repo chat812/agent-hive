@@ -79,6 +79,7 @@ export interface RegisterRequest {
   harness: string;
   hostname: string;
   summary: string;
+  bridge_peer_id?: string;
 }
 
 export interface RegisterResponse {
@@ -151,6 +152,7 @@ export interface LandlordInfo {
   id: string;
   agents: number;
   hostname: string;
+  cwd: string;
   status: "pending" | "approved" | "rejected";
   disk_free?: number; // bytes
   ram_free?: number;  // bytes
@@ -180,4 +182,5 @@ export type WsEvent =
   | { type: "landlord_pending"; landlord: LandlordInfo }
   | { type: "landlord_approved"; landlord: LandlordInfo }
   | { type: "landlord_rejected"; landlord_id: string }
+  | { type: "spawn_error"; error: string }
   | { type: "budget_update"; budget: BudgetInfo };

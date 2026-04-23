@@ -1800,20 +1800,137 @@ header {
   overflow: hidden;
 }
 
+/* View toggle button */
+.terminal-view-toggle {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--fg-dim);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 4px;
+  margin-left: 8px;
+  transition: all 0.15s;
+}
+.terminal-view-toggle:hover {
+  color: var(--fg);
+  border-color: var(--fg-dim);
+}
+
+/* Tab bar */
+.terminal-tab-bar {
+  display: flex;
+  gap: 2px;
+  padding: 0 4px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  flex-shrink: 0;
+  scrollbar-width: thin;
+}
+.terminal-tab-bar::-webkit-scrollbar {
+  height: 3px;
+}
+.terminal-tab-bar::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+.terminal-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--fg-dim);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.15s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.terminal-tab:hover {
+  color: var(--fg);
+  background: rgba(255, 255, 255, 0.03);
+}
+.terminal-tab.active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.terminal-tab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  flex-shrink: 0;
+  box-shadow: 0 0 4px var(--green);
+}
+
+.terminal-tab-name {
+  font-weight: 500;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.terminal-tab-close {
+  background: none;
+  border: none;
+  color: var(--fg-dim);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.terminal-tab:hover .terminal-tab-close { opacity: 0.5; }
+.terminal-tab-close:hover { opacity: 1 !important; color: var(--red); }
+
+/* Terminal area — shared */
 .terminal-area {
   display: flex;
-  flex-wrap: wrap;
   gap: 4px;
   flex: 1;
   min-height: 0;
 }
 
+/* Tab mode: single terminal, full height */
+.terminal-area.terminal-tab {
+  flex-wrap: nowrap;
+  flex-direction: column;
+}
+.terminal-area.terminal-tab .terminal-panel {
+  flex: 1;
+  max-height: none;
+  min-width: 0;
+  width: 100%;
+}
+
+/* Grid mode: scrollable 2-column grid */
+.terminal-area.terminal-grid {
+  flex-wrap: wrap;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.terminal-area.terminal-grid::-webkit-scrollbar {
+  width: 6px;
+}
+.terminal-area.terminal-grid::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+.terminal-area.terminal-grid .terminal-panel {
+  flex: 1 1 calc(50% - 4px);
+  min-width: 300px;
+  max-height: 350px;
+}
+
 .terminal-panel {
   display: flex;
   flex-direction: column;
-  min-width: 360px;
-  flex: 1 1 calc(50% - 4px);
-  max-height: 400px;
+  min-width: 0;
   background: #0d0f16;
   border-radius: 8px;
   border: 1px solid var(--border);
@@ -1895,6 +2012,43 @@ header {
 
 .terminal-panel-term .xterm {
   height: 100%;
+}
+
+/* --- Spawn error toast --- */
+
+.toast-error {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  background: #dc2626;
+  color: #fff;
+  padding: 12px 20px;
+  border-radius: 8px;
+  font-size: 13px;
+  max-width: 420px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+  z-index: 9999;
+  animation: toast-in 0.25s ease-out;
+}
+.toast-error-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.2);
+  font-weight: 700;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 /* --- Spawn dialog --- */

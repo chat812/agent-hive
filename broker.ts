@@ -52,6 +52,22 @@ const FILES_DIR = process.env.AGENT_HIVE_FILES_DIR ??
   `${process.env.HOME ?? process.env.USERPROFILE}/.agent-hive-files`;
 mkdirSync(FILES_DIR, { recursive: true });
 
+// --- Security headers ---
+
+const SECURITY_HEADERS: Record<string, string> = {
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:; font-src 'self'",
+};
+
+function withSecurityHeaders(res: Response): Response {
+  if (res.status === 101) return res;
+  const h = new Headers(res.headers);
+  for (const [k, v] of Object.entries(SECURITY_HEADERS)) h.set(k, v);
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h });
+}
+
 // --- Master key ---
 
 const MASTER_KEY = await loadOrCreateMasterKey();
@@ -71,7 +87,7 @@ db.run(`
   )
 `);
 
-db.run(`INSERT OR IGNORE INTO channels (name, created_at) VALUES ('main', '${new Date().toISOString()}')`);
+db.run("INSERT OR IGNORE INTO channels (name, created_at) VALUES (?, ?)", ["main", new Date().toISOString()]);
 
 db.run(`
   CREATE TABLE IF NOT EXISTS peer_last_channel (
@@ -284,6 +300,9 @@ const wsAgents = new Map<string, any>(); // peerId → ServerWebSocket
 
 const wsLandlords = new Map<string, any>(); // landlordId → ServerWebSocket (approved)
 const wsPendingLandlords = new Map<string, any>(); // landlordId → ServerWebSocket (pending approval)
+const landlordCwds = new Map<string, string>(); // landlordId → cwd
+const landlordLastActivity = new Map<string, number>(); // landlordId → last message/ping timestamp
+const LANDLORD_IDLE_TIMEOUT_MS = 30_000; // 30s — consider dead if no activity
 const landlordStats = new Map<string, { disk_free: number; ram_free: number; cpu_pct: number; ts: number }>();
 const landlordStatsBroadcast = new Map<string, number>(); // landlordId → last broadcast timestamp
 
@@ -358,6 +377,7 @@ function sendToLandlord(landlordId: string, event: object): boolean {
     return true;
   } catch {
     wsLandlords.delete(landlordId);
+    landlordCwds.delete(landlordId);
     return false;
   }
 }
@@ -365,13 +385,14 @@ function sendToLandlord(landlordId: string, event: object): boolean {
 function getLandlordList(): LandlordInfo[] {
   const list: LandlordInfo[] = [];
   for (const [lid, ws] of wsLandlords) {
-    try { ws.ping(); } catch { wsLandlords.delete(lid); continue; }
+    try { ws.ping(); } catch { wsLandlords.delete(lid); landlordCwds.delete(lid); continue; }
     const peers = (selectAllPeersAny.all() as Peer[]).filter(p => p.bridge_id === lid && p.status === "approved");
     const landlord = selectLandlordById.get(lid) as any;
     const hostname = landlord?.hostname || peers[0]?.hostname || "";
+    const cwd = landlordCwds.get(lid) || "";
     const stats = landlordStats.get(lid);
     list.push({
-      id: lid, agents: peers.length, hostname, status: "approved",
+      id: lid, agents: peers.length, hostname, cwd, status: "approved",
       ...(stats ? { disk_free: stats.disk_free, ram_free: stats.ram_free, cpu_pct: stats.cpu_pct } : {}),
     });
   }
@@ -382,7 +403,7 @@ function getPendingLandlordList(): LandlordInfo[] {
   const list: LandlordInfo[] = [];
   for (const [lid] of wsPendingLandlords) {
     const landlord = selectLandlordById.get(lid) as any;
-    list.push({ id: lid, agents: 0, hostname: landlord?.hostname || "", status: "pending" });
+    list.push({ id: lid, agents: 0, hostname: landlord?.hostname || "", cwd: "", status: "pending" });
   }
   return list;
 }
@@ -400,14 +421,31 @@ setInterval(() => {
 
 // Ping landlords every 5s to detect dead connections and keep agents alive
 setInterval(() => {
+  const now = Date.now();
   for (const [bridgeId, ws] of wsLandlords) {
+    const lastActivity = landlordLastActivity.get(bridgeId) ?? 0;
+    if (now - lastActivity > LANDLORD_IDLE_TIMEOUT_MS) {
+      // No activity for 30s — connection is dead
+      console.error(`[broker] Landlord ${bridgeId} idle timeout (no activity for ${Math.round((now - lastActivity) / 1000)}s)`);
+      wsLandlords.delete(bridgeId);
+      landlordCwds.delete(bridgeId);
+      landlordLastActivity.delete(bridgeId);
+      // Remove all agents belonging to this landlord
+      const landlordAgents = (selectAllPeersAny.all() as Peer[]).filter(p => p.bridge_id === bridgeId);
+      for (const agent of landlordAgents) {
+        terminalBuffers.delete(agent.id);
+        removePeer(agent.id);
+        broadcast({ type: "agent_exited", session_id: agent.id });
+      }
+      broadcast({ type: "landlord_update", landlords: getLandlordList() });
+      continue;
+    }
     try {
       ws.ping();
-      // Keep landlord agents alive — update last_seen for all peers on this landlord
-      const now = new Date().toISOString();
-      db.run("UPDATE peers SET last_seen = ? WHERE bridge_id = ? AND status = 'approved'", [now, bridgeId]);
     } catch {
       wsLandlords.delete(bridgeId);
+      landlordCwds.delete(bridgeId);
+      landlordLastActivity.delete(bridgeId);
       broadcast({ type: "landlord_update", landlords: getLandlordList() });
     }
   }
@@ -514,9 +552,11 @@ setInterval(cleanStalePeers, 30_000);
 
 function generateId(): string {
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
   let id = "";
   for (let i = 0; i < 8; i++) {
-    id += chars[Math.floor(Math.random() * chars.length)];
+    id += chars[bytes[i] % chars.length];
   }
   return id;
 }
@@ -549,9 +589,47 @@ function getPeerIdFromToken(authHeader: string | null): string | null {
 // --- Request handlers ---
 
 function handleRegister(body: RegisterRequest): RegisterResponse {
-  const id = generateId();
   const now = new Date().toISOString();
   const sessionToken = generateToken(32);
+
+  // If bridge pre-registered this peer, update it instead of creating duplicate
+  if (body.bridge_peer_id) {
+    const id = body.bridge_peer_id;
+    const existing = selectPeerById.get(id) as Peer | null;
+    if (existing) {
+      // Bridge registered first — update with real agent info
+      db.run("UPDATE peers SET name = ?, pid = ?, cwd = ?, git_root = ?, summary = ?, last_seen = ? WHERE id = ?",
+        [body.name ?? existing.name, body.pid, body.cwd ?? existing.cwd, body.git_root ?? existing.git_root, body.summary ?? "", now, id]);
+      insertToken.run(sessionToken, id, now);
+      const { role } = pushChannelRole(id, existing.channel || "main");
+      const peer = selectPeerById.get(id) as Peer;
+      broadcast({ type: "peer_updated", peer });
+      return { id, token: sessionToken, channel: existing.channel || "main", role };
+    } else {
+      // Agent registered before bridge — create with bridge's ID so bridge can find it later
+      const lastChannelRow = selectLastChannel.get(body.hostname, body.cwd) as { channel: string } | null;
+      const rejoinChannel = lastChannelRow?.channel ?? "main";
+      insertPeer.run(
+        id, body.name ?? "", body.pid, body.cwd, body.git_root ?? null, body.tty ?? null,
+        body.harness, body.hostname, body.summary, now, now
+      );
+      insertToken.run(sessionToken, id, now);
+      const known = isKnownPeer.get(body.hostname) as { 1: number } | null;
+      if (known) {
+        updateStatus.run("approved", id);
+        const { role } = pushChannelRole(id, rejoinChannel);
+        const peer = selectPeerById.get(id) as Peer;
+        broadcast({ type: "peer_joined", peer });
+        return { id, token: sessionToken, channel: rejoinChannel, role };
+      } else {
+        const peer = selectPeerById.get(id) as Peer;
+        broadcast({ type: "peer_pending", peer });
+        return { id, token: sessionToken, channel: rejoinChannel, role: "" };
+      }
+    }
+  }
+
+  const id = generateId();
 
   // Look up last channel before removing old records
   const lastChannelRow = selectLastChannel.get(body.hostname, body.cwd) as { channel: string } | null;
@@ -963,6 +1041,7 @@ Bun.serve({
   hostname: HOST,
 
   async fetch(req, server) {
+    const res = await (async () => {
     const url = new URL(req.url);
     const path = url.pathname;
 
@@ -1041,7 +1120,8 @@ Bun.serve({
           return new Response("bridge_id required", { status: 400 });
         }
         const hostname = url.searchParams.get("hostname") || "";
-        const key = url.searchParams.get("key");
+        const bridgeCwd = url.searchParams.get("cwd") || "";
+        const key = req.headers.get("x-landlord-key") ?? url.searchParams.get("key");
         const token = url.searchParams.get("token");
         let isApproved = false;
 
@@ -1075,7 +1155,7 @@ Bun.serve({
           isApproved = false;
         }
 
-        const upgraded = server.upgrade(req, { data: { type: "landlord", bridgeId, approved: isApproved, hostname } });
+        const upgraded = server.upgrade(req, { data: { type: "landlord", bridgeId, approved: isApproved, hostname, cwd: bridgeCwd } });
         if (upgraded) return new Response(null, { status: 101 });
         return new Response("WebSocket upgrade failed", { status: 500 });
       }
@@ -1147,7 +1227,7 @@ Bun.serve({
             pendingWs.data.approved = true;
             wsLandlords.set(bridgeId, pendingWs);
             console.error(`[broker] Landlord approved: ${bridgeId}`);
-            broadcast({ type: "landlord_approved", landlord: { id: bridgeId, agents: 0, hostname: (selectLandlordById.get(bridgeId) as any)?.hostname || "", status: "approved" } });
+            broadcast({ type: "landlord_approved", landlord: { id: bridgeId, agents: 0, hostname: (selectLandlordById.get(bridgeId) as any)?.hostname || "", cwd: "", status: "approved" } });
             broadcast({ type: "landlord_update", landlords: getLandlordList() });
           }
           return Response.json({ ok: true });
@@ -1517,6 +1597,8 @@ case "/set-role": {
       const msg = e instanceof Error ? e.message : String(e);
       return Response.json({ error: msg }, { status: 500 });
     }
+    })();
+    return withSecurityHeaders(res);
   },
 
   websocket: {
@@ -1529,12 +1611,14 @@ case "/set-role": {
         wsAgents.set(peerId, ws);
         console.error(`[broker] Agent WS connected: ${peerId} (${name})`);
       } else if (ws.data?.type === "landlord") {
-        const { bridgeId, approved, hostname } = ws.data;
+        const { bridgeId, approved, hostname, cwd: landlordCwd } = ws.data;
         if (approved) {
           // Close any existing WS connection for this landlord
           const existing = wsLandlords.get(bridgeId);
           if (existing) { try { existing.close(); } catch {} }
           wsLandlords.set(bridgeId, ws);
+          landlordLastActivity.set(bridgeId, Date.now());
+          if (landlordCwd) landlordCwds.set(bridgeId, landlordCwd);
           console.error(`[broker] Landlord WS connected: ${bridgeId}`);
           broadcast({ type: "landlord_update", landlords: getLandlordList() });
         } else {
@@ -1542,7 +1626,7 @@ case "/set-role": {
           try { insertLandlord.run(bridgeId, hostname, new Date().toISOString()); } catch {}
           wsPendingLandlords.set(bridgeId, ws);
           ws.send(JSON.stringify({ type: "landlord_pending", bridge_id: bridgeId }));
-          broadcast({ type: "landlord_pending", landlord: { id: bridgeId, agents: 0, hostname, status: "pending" } });
+          broadcast({ type: "landlord_pending", landlord: { id: bridgeId, agents: 0, hostname, cwd: "", status: "pending" } });
           console.error(`[broker] Landlord pending approval: ${bridgeId} (${hostname})`);
         }
       } else {
@@ -1597,7 +1681,13 @@ case "/set-role": {
 
           // Spawn agent on bridge
           if (payload.type === "spawn_agent" && payload.cmd && payload.bridge_id) {
-            sendToLandlord(payload.bridge_id, { type: "spawn_agent", cmd: payload.cmd, args: payload.args || [] });
+            const ALLOWED_COMMANDS = ["freecc", "claude", "claude-code", "opencode", "codex", "cursor", "bun", "node"];
+            const base = String(payload.cmd).split(/\s+/)[0];
+            if (base.includes("/") || base.includes("\\") || !ALLOWED_COMMANDS.includes(base)) {
+              console.error(`[broker] Blocked spawn of disallowed command: ${base}`);
+            } else {
+              sendToLandlord(payload.bridge_id, { type: "spawn_agent", cmd: payload.cmd, args: payload.args || [], cwd: payload.cwd || "" });
+            }
           }
 
           // Kill agent on bridge
@@ -1619,18 +1709,17 @@ case "/set-role": {
         try {
           const payload = JSON.parse(message as string);
           const bridgeId = data.bridgeId;
+          landlordLastActivity.set(bridgeId, Date.now());
 
           // Agent registration from bridge — auto-approve
           if (payload.type === "register") {
             const id = payload.id || generateId();
-            const sessionToken = generateToken(32);
             const now = new Date().toISOString();
             const peerName = payload.name || `agent-${id.slice(0, 4)}`;
-
-            // Check if peer already exists (re-registration after reconnect)
             const existing = selectPeerById.get(id) as Peer | null;
+
             if (existing) {
-              // Reactivate existing peer
+              // Reactivate existing peer (re-registration after reconnect)
               db.run("UPDATE peers SET status = 'approved', bridge_id = ?, last_seen = ? WHERE id = ?", [bridgeId, now, id]);
               const peer = { ...existing, status: "approved", bridge_id: bridgeId, last_seen: now } as Peer;
               broadcast({ type: "peer_joined", peer });
@@ -1653,6 +1742,7 @@ case "/set-role": {
                 "", now, now
               );
               db.run("UPDATE peers SET bridge_id = ?, status = 'approved' WHERE id = ?", [bridgeId, id]);
+              const sessionToken = generateToken(32);
               insertToken.run(sessionToken, id, now);
             } catch (err: any) {
               console.error(`[broker] Bridge register error: ${err.message}`);
@@ -1695,6 +1785,9 @@ case "/set-role": {
             let buf = terminalBuffers.get(payload.session_id);
             if (!buf) { buf = []; terminalBuffers.set(payload.session_id, buf); }
             buf.push(payload.data);
+            // Keep agent alive — update last_seen on real output
+            const now = new Date().toISOString();
+            db.run("UPDATE peers SET last_seen = ? WHERE id = ? AND status = 'approved'", [now, payload.session_id]);
             // Trim old chunks if buffer exceeds max
             if (buf.length > TERMINAL_BUFFER_MAX_CHUNKS) {
               buf.splice(0, buf.length - TERMINAL_BUFFER_MAX_CHUNKS);
@@ -1709,6 +1802,13 @@ case "/set-role": {
             removePeer(payload.session_id);
             broadcast({ type: "agent_exited", session_id: payload.session_id });
             console.error(`[broker] Landlord agent exited: ${payload.session_id}`);
+            return;
+          }
+
+          // Spawn error from bridge → broadcast to dashboards
+          if (payload.type === "spawn_error" && payload.error) {
+            broadcast({ type: "spawn_error", error: payload.error });
+            console.error(`[broker] Spawn error from landlord ${bridgeId}: ${payload.error}`);
             return;
           }
 
@@ -1732,11 +1832,19 @@ case "/set-role": {
       if (ws.data?.type === "agent") {
         const { peerId, name } = ws.data;
         wsAgents.delete(peerId);
+        // For landlord-spawned agents, notify dashboard to close terminal
+        const peer = selectPeerById.get(peerId) as Peer | null;
+        if (peer?.bridge_id) {
+          terminalBuffers.delete(peerId);
+          broadcast({ type: "agent_exited", session_id: peerId });
+        }
         console.error(`[broker] Agent WS disconnected: ${peerId} (${name})`);
       } else if (ws.data?.type === "landlord") {
         const { bridgeId, approved } = ws.data;
         if (approved) {
           wsLandlords.delete(bridgeId);
+          landlordCwds.delete(bridgeId);
+          landlordLastActivity.delete(bridgeId);
           landlordStats.delete(bridgeId);
           landlordStatsBroadcast.delete(bridgeId);
           console.error(`[broker] Landlord WS disconnected: ${bridgeId}`);

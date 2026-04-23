@@ -39,12 +39,15 @@ impl BrokerSender {
         Self { sink: None }
     }
 
-    pub async fn send(&mut self, msg: &Value) {
+    pub async fn send(&mut self, msg: &Value) -> bool {
         if let Some(sink) = &mut self.sink {
             let text = serde_json::to_string(msg).unwrap_or_default();
-            let _ = futures_util::SinkExt::send(sink, Message::Text(text.into())).await;
+            futures_util::SinkExt::send(sink, Message::Text(text.into())).await.is_ok()
+        } else {
+            false
         }
     }
+
 }
 
 pub async fn connect(
@@ -56,14 +59,15 @@ pub async fn connect(
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
 > {
     let base = if broker_url.ends_with('/') { broker_url.to_string() } else { format!("{}/", broker_url) };
-    let url = match mutual_key {
-        Some(key) => format!("{}ws/landlord?bridge_id={}&key={}&hostname={}", base, bridge_id, key, hostname),
-        None => format!("{}ws/landlord?bridge_id={}&hostname={}", base, bridge_id, hostname),
-    };
+    let url = format!("{}ws/landlord?bridge_id={}&hostname={}&cwd={}", base, bridge_id, hostname,
+        urlencoding::encode(&std::env::current_dir().unwrap_or_default().to_string_lossy()));
     let mut request = url.into_client_request()?;
     // Remove permessage-deflate extension for compatibility
     let headers = request.headers_mut();
     headers.remove("Sec-WebSocket-Extensions");
+    if let Some(key) = mutual_key {
+        headers.insert("X-Landlord-Key", key.parse()?);
+    }
 
     let mut config = WebSocketConfig::default();
     config.max_message_size = Some(16 * 1024 * 1024);
@@ -150,11 +154,20 @@ async fn handle_broker_message(
                 .and_then(|v| v.as_array())
                 .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
                 .unwrap_or_default();
+            let cwd = msg.get("cwd").and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from);
             if !cmd.is_empty() {
                 let mut m = mgr.lock().await;
-                match m.spawn_agent(cmd, args, broker_tx).await {
+                match m.spawn_agent(cmd, args, cwd).await {
                     Ok(id) => println!("Spawned agent from broker request: {}", id),
-                    Err(e) => eprintln!("Spawn from broker failed: {}", e),
+                    Err(e) => {
+                        eprintln!("Spawn from broker failed: {}", e);
+                        broker_tx.lock().await.send(&serde_json::json!({
+                            "type": "spawn_error",
+                            "error": format!("{}", e),
+                        })).await;
+                    }
                 }
             }
             false
@@ -163,7 +176,7 @@ async fn handle_broker_message(
             let session_id = msg.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
             if !session_id.is_empty() {
                 let mut m = mgr.lock().await;
-                let _ = m.kill_agent(session_id, broker_tx).await;
+                let _ = m.kill_agent(session_id).await;
             }
             false
         }

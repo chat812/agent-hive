@@ -8,9 +8,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
+use anyhow::{Context, Result, bail};
+
 use futures_util::StreamExt;
 
 use reqwest::Client;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::model::{
     CustomNotification, ExperimentalCapabilities, Implementation, ServerCapabilities, ServerInfo,
@@ -172,7 +175,7 @@ impl BrokerClient {
         &self,
         path: &str,
         body: &impl Serialize,
-    ) -> Result<T, String> {
+    ) -> Result<T> {
         let token = self.token.lock().await.clone();
         let mut req = self
             .http
@@ -184,22 +187,22 @@ impl BrokerClient {
         let res = req
             .send()
             .await
-            .map_err(|e| format!("Broker request failed ({}): {}", path, e))?;
+            .with_context(|| format!("Broker request failed ({})", path))?;
         if !res.status().is_success() {
             let status = res.status();
             let text = res.text().await.unwrap_or_default();
-            return Err(format!("Broker error ({}): {} {}", path, status, text));
+            bail!("Broker error ({}): {} {}", path, status, text);
         }
         res.json()
             .await
-            .map_err(|e| format!("Broker response parse error ({}): {}", path, e))
+            .with_context(|| format!("Broker response parse error ({})", path))
     }
 
     async fn post_multipart<T: serde::de::DeserializeOwned>(
         &self,
         path: &str,
         form: reqwest::multipart::Form,
-    ) -> Result<T, String> {
+    ) -> Result<T> {
         let token = self.token.lock().await.clone();
         let mut req = self.http
             .post(format!("{}{}", self.broker_url, path))
@@ -208,14 +211,14 @@ impl BrokerClient {
             req = req.bearer_auth(t);
         }
         let res = req.send().await
-            .map_err(|e| format!("Broker request failed ({}): {}", path, e))?;
+            .with_context(|| format!("Broker request failed ({})", path))?;
         if !res.status().is_success() {
             let status = res.status();
             let text = res.text().await.unwrap_or_default();
-            return Err(format!("Broker error ({}): {} {}", path, status, text));
+            bail!("Broker error ({}): {} {}", path, status, text);
         }
         res.json().await
-            .map_err(|e| format!("Broker response parse error ({}): {}", path, e))
+            .with_context(|| format!("Broker response parse error ({})", path))
     }
 
     async fn admin_post<T: serde::de::DeserializeOwned>(
@@ -1595,10 +1598,17 @@ impl ServerHandler for CoworkerServer {
                     loop {
                         let token = { state_ws.lock().await.token.clone().unwrap_or_default() };
                         let ws_url = broker_url_ws.replace("http://", "ws://").replace("https://", "wss://");
-                        let url = format!("{}/ws/agent?token={}", ws_url, urlencoding(&token));
+                        let url = format!("{}/ws/agent", ws_url);
 
                         flog!("Connecting WebSocket...");
-                        match tokio_tungstenite::connect_async(&url).await {
+                        let mut request = url.into_client_request().expect("valid WS URL");
+                        if !token.is_empty() {
+                            request.headers_mut().insert(
+                                "Authorization",
+                                format!("Bearer {}", token).parse().expect("valid header value"),
+                            );
+                        }
+                        match tokio_tungstenite::connect_async(request).await {
                             Ok((ws_stream, _)) => {
                                 flog!("Agent WS connected");
                                 reconnect_delay = Duration::from_secs(1);
@@ -2219,7 +2229,7 @@ fn read_master_key() -> Option<String> {
 // --- Main ---
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
     let broker_url = env::var("HIVE_HOST").unwrap_or_else(|_| {
         let port = env::var("AGENT_HIVE_PORT").unwrap_or_else(|_| "7899".to_string());
         format!("http://127.0.0.1:{}", port)
@@ -2257,7 +2267,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::inherit())
                     .spawn()
-                    .map_err(|e| format!("Failed to spawn broker: {}", e))?;
+                    .with_context(|| format!("Failed to spawn broker"))?;
 
                 for _ in 0..30 {
                     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -2269,10 +2279,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             if !broker.health_check().await {
-                return Err("Broker not reachable and could not be started".into());
+                bail!("Broker not reachable and could not be started");
             }
         } else {
-            return Err(format!("Remote broker at {} is not reachable", broker_url).into());
+            bail!("Remote broker at {} is not reachable", broker_url);
         }
     } else {
         log("Broker already running");
@@ -2299,6 +2309,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log(&format!("Name: {}", my_name));
 
     // Register with broker
+    let bridge_peer_id = env::var("AGENT_HIVE_PEER_ID").ok();
     let reg_body = serde_json::json!({
         "name": my_name,
         "pid": std::process::id(),
@@ -2308,12 +2319,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "harness": harness,
         "hostname": my_hostname,
         "summary": "",
+        "bridge_peer_id": bridge_peer_id,
     });
 
     let reg: RegisterResponse = broker
         .post("/register", &reg_body)
         .await
-        .map_err(|e| format!("Failed to register with broker: {}", e))?;
+        .context("Failed to register with broker")?;
 
     log(&format!(
         "Registered as peer {} (pending approval)",

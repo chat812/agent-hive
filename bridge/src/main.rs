@@ -124,27 +124,49 @@ fn ensure_mcp_config(coworker_path: &str) {
         return; // already configured
     }
 
+    // Resolve to absolute path so freecc can find the binary from any cwd
+    let abs_path = std::path::absolute(coworker_path)
+        .unwrap_or_else(|_| std::path::PathBuf::from(coworker_path));
+
+    if !abs_path.exists() {
+        eprintln!("coworker binary not found: {}", abs_path.display());
+        return;
+    }
+
     // Add agent-hive entry
     if config.get_mut("mcpServers").and_then(|v| v.as_object_mut()).is_none() {
         config["mcpServers"] = serde_json::json!({});
     }
     if let Some(servers) = config.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
-        servers.insert("agent-hive".to_string(), serde_json::json!({"command": coworker_path}));
+        servers.insert("agent-hive".to_string(), serde_json::json!({"command": abs_path.to_string_lossy()}));
     }
 
     let _ = std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap_or_default());
     println!("Configured agent-hive MCP in {}", config_path.display());
 }
 
-const HARNESS_COMMANDS: &[&str] = &["freecc", "claude", "claude-code"];
+const ALLOWED_COMMANDS: &[&str] = &[
+    "freecc", "claude", "claude-code", "opencode", "codex", "cursor", "bun", "node",
+];
 
 fn is_harness_command(cmd: &str) -> bool {
-    // Extract the binary name from the path
     let name = std::path::Path::new(cmd)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(cmd);
-    HARNESS_COMMANDS.contains(&name)
+    ALLOWED_COMMANDS.contains(&name)
+}
+
+fn validate_spawn_command(cmd: &str) -> anyhow::Result<()> {
+    // Block path separators — only bare binary names allowed
+    if cmd.contains('/') || cmd.contains('\\') {
+        anyhow::bail!("Path separators not allowed in command: {}", cmd);
+    }
+    let base = cmd.split_whitespace().next().unwrap_or("");
+    if !is_harness_command(base) {
+        anyhow::bail!("Command not in whitelist: {} (allowed: {:?})", base, ALLOWED_COMMANDS);
+    }
+    Ok(())
 }
 
 #[tokio::main]
@@ -185,21 +207,26 @@ async fn main() -> Result<()> {
 
     // Keep the HTTP version of the broker URL for passing to spawned agents
     let broker_url_http = broker_url.replace("ws://", "http://").replace("wss://", "https://");
+
+    // Shared sender reference — PTY reader threads read through this indirection.
+    // On reconnect, we swap the inner Arc so all PTY threads pick up the new sender.
+    let shared_sender: manager::SharedSender = Arc::new(Mutex::new(Arc::new(Mutex::new(
+        client::BrokerSender::new_placeholder()
+    ))));
+
     let mgr = Arc::new(Mutex::new(manager::AgentManager::new(
         bridge_id.clone(),
         broker_url_http,
         coworker_path,
+        shared_sender.clone(),
     )));
 
-    // Start local gateway for coworkers
+    // Start local gateway for coworkers — gateway also uses shared_sender
     let mgr_gateway = mgr.clone();
+    let gateway_sender = shared_sender.clone();
     let gateway_port = local_port;
     tokio::spawn(async move {
-        // Gateway will be started after broker connection is established
-        // For now, start it eagerly
-        let _ = gateway::start(gateway_port, mgr_gateway, Arc::new(Mutex::new(
-            client::BrokerSender::new_placeholder()
-        ))).await;
+        let _ = gateway::start(gateway_port, mgr_gateway, gateway_sender).await;
     });
 
     // Reconnect loop
@@ -220,10 +247,16 @@ async fn main() -> Result<()> {
                 let broker_tx = Arc::new(Mutex::new(client::BrokerSender::new(ws_sink)));
                 let broker_rx = Arc::new(Mutex::new(ws_stream));
 
+                // Swap the shared sender — all PTY reader threads will now use this one
+                {
+                    let new_sender = broker_tx.clone();
+                    *shared_sender.lock().await = new_sender;
+                }
+
                 // Re-register running agents after reconnect
                 {
                     let m = mgr.lock().await;
-                    m.re_register_all(&broker_tx).await;
+                    m.re_register_all().await;
                 }
 
                 // Start broker message reader
@@ -236,7 +269,6 @@ async fn main() -> Result<()> {
                 let stdin = tokio::io::BufReader::new(tokio::io::stdin());
                 let mut lines = stdin.lines();
 
-                let broker_tx_clone = broker_tx.clone();
                 let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let done_clone = done.clone();
 
@@ -277,7 +309,7 @@ async fn main() -> Result<()> {
                                             let cmd = parts[1].clone();
                                             let args: Vec<String> = parts[2..].to_vec();
                                             let mut m = mgr.lock().await;
-                                            match m.spawn_agent(cmd, args, &broker_tx_clone).await {
+                                            match m.spawn_agent(cmd, args, None).await {
                                                 Ok(id) => println!("Spawned agent: {}", id),
                                                 Err(e) => eprintln!("Spawn failed: {}", e),
                                             }
@@ -288,7 +320,7 @@ async fn main() -> Result<()> {
                                                 continue;
                                             }
                                             let mut m = mgr.lock().await;
-                                            match m.kill_agent(&parts[1], &broker_tx_clone).await {
+                                            match m.kill_agent(&parts[1]).await {
                                                 Ok(()) => println!("Killed agent: {}", parts[1]),
                                                 Err(e) => eprintln!("Kill failed: {}", e),
                                             }
@@ -305,7 +337,7 @@ async fn main() -> Result<()> {
                                         "quit" | "exit" => {
                                             println!("Shutting down...");
                                             let mut m = mgr.lock().await;
-                                            m.shutdown(&broker_tx_clone).await;
+                                            m.shutdown().await;
                                             return Ok(());
                                         }
                                         _ => println!("Unknown command: {}", parts[0]),

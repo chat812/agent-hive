@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { marked } from "marked";
+import DOMPurify from "dompurify";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
@@ -717,7 +718,7 @@ function MessageItem({ msg, peers, isNew }: { msg: Message; peers: Peer[]; isNew
         <span className="to" style={{ color: peerColor(toName) }}>{toName}<RoleEmoji role={toPeer?.role} /></span>
         <span>{timeAgo(msg.sent_at)}</span>
       </div>
-      <div className="message-text markdown-body" dangerouslySetInnerHTML={{ __html: marked.parse(msg.text || "", { async: false }) as string }} />
+      <div className="message-text markdown-body" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(marked.parse(msg.text || "", { async: false }) as string) }} />
     </div>
   );
 }
@@ -959,12 +960,13 @@ const XTERM_THEME = {
 
 // --- Terminal Panel ---
 
-function TerminalPanel({ sessionId, name, ws, onClose, onTerminalReady, onRename, draggable, onDragStart, onDragOver }: {
+function TerminalPanel({ sessionId, name, ws, onClose, onTerminalReady, onTerminalUnmount, onRename, draggable, onDragStart, onDragOver }: {
   sessionId: string;
   name: string;
   ws: WebSocket | null;
   onClose: () => void;
   onTerminalReady: (sessionId: string, term: Terminal, fit: FitAddon) => void;
+  onTerminalUnmount?: (sessionId: string) => void;
   onRename?: (sessionId: string, newName: string) => void;
   draggable?: boolean;
   onDragStart?: () => void;
@@ -1048,6 +1050,7 @@ function TerminalPanel({ sessionId, name, ws, onClose, onTerminalReady, onRename
     return () => {
       ro.disconnect();
       term.dispose();
+      onTerminalUnmount?.(sessionId);
     };
   }, [sessionId]);
 
@@ -1098,12 +1101,13 @@ function TerminalPanel({ sessionId, name, ws, onClose, onTerminalReady, onRename
 
 function HireWorkerDialog({ landlords, onHire, onClose }: {
   landlords: LandlordInfo[];
-  onHire: (landlordId: string, cmd: string, args: string[]) => void;
+  onHire: (landlordId: string, cmd: string, args: string[], cwd: string) => void;
   onClose: () => void;
 }) {
   const [landlordId, setLandlordId] = useState(landlords[0]?.id ?? "");
   const [cmd, setCmd] = useState("freecc");
   const [args, setArgs] = useState("--dangerously-load-development-channels server:agent-hive");
+  const [cwd, setCwd] = useState(landlords[0]?.cwd ?? "");
   const cmdRef = useRef<HTMLInputElement>(null);
 
   const HARNESS_ARGS = "--dangerously-load-development-channels server:agent-hive";
@@ -1119,9 +1123,14 @@ function HireWorkerDialog({ landlords, onHire, onClose }: {
 
   useEffect(() => { cmdRef.current?.focus(); cmdRef.current?.select(); }, []);
 
+  useEffect(() => {
+    const selected = landlords.find(l => l.id === landlordId);
+    if (selected) setCwd(selected.cwd || "");
+  }, [landlordId, landlords]);
+
   const handleHire = () => {
     if (!cmd.trim()) return;
-    onHire(landlordId, cmd.trim(), args.trim() ? args.trim().split(/\s+/) : []);
+    onHire(landlordId, cmd.trim(), args.trim() ? args.trim().split(/\s+/) : [], cwd.trim());
     onClose();
   };
 
@@ -1143,6 +1152,9 @@ function HireWorkerDialog({ landlords, onHire, onClose }: {
         <label className="spawn-label">Arguments</label>
         <input className="spawn-input" value={args} onChange={(e) => setArgs(e.target.value)}
           placeholder="space-separated arguments (optional)" onKeyDown={(e) => { if (e.key === "Enter") handleHire(); if (e.key === "Escape") onClose(); }} />
+        <label className="spawn-label">Working Directory <span style={{ opacity: 0.5, fontWeight: 400 }}>(on bridge machine)</span></label>
+        <input className="spawn-input" value={cwd} onChange={(e) => setCwd(e.target.value)}
+          placeholder="Leave empty to use bridge's current directory" onKeyDown={(e) => { if (e.key === "Enter") handleHire(); if (e.key === "Escape") onClose(); }} />
         <div className="spawn-actions">
           <button className="spawn-cancel" onClick={onClose}>Cancel</button>
           <button className="spawn-ok" onClick={handleHire}>Hire</button>
@@ -1238,8 +1250,11 @@ function Dashboard({ masterToken }: { masterToken: string }) {
   const [pendingLandlords, setPendingLandlords] = useState<LandlordInfo[]>([]);
   const [openTerminals, setOpenTerminals] = useState<Set<string>>(new Set());
   const [showSpawnDialog, setShowSpawnDialog] = useState(false);
+  const [spawnError, setSpawnError] = useState<string | null>(null);
   const [terminalNames, setTerminalNames] = useState<Record<string, string>>({});
   const [terminalOrder, setTerminalOrder] = useState<string[]>([]);
+  const [activeTerminalId, setActiveTerminalId] = useState<string | null>(null);
+  const [terminalViewMode, setTerminalViewMode] = useState<"tab" | "grid">("tab");
   const [budget, setBudget] = useState<BudgetInfo | null>(null);
   const [showBudgetDialog, setShowBudgetDialog] = useState(false);
 
@@ -1252,6 +1267,23 @@ function Dashboard({ masterToken }: { masterToken: string }) {
     }
     return ordered;
   }, [openTerminals, terminalOrder]);
+
+  // Filter terminals by selected channel
+  const channelTerminalIds = useMemo(() => {
+    return sortedTerminalIds.filter((id) => {
+      const peer = peers.find((p) => p.id === id);
+      return !peer || peer.channel === selectedChannel;
+    });
+  }, [sortedTerminalIds, peers, selectedChannel]);
+
+  // Auto-select active terminal
+  useEffect(() => {
+    if (channelTerminalIds.length === 0) {
+      setActiveTerminalId(null);
+    } else if (!activeTerminalId || !channelTerminalIds.includes(activeTerminalId)) {
+      setActiveTerminalId(channelTerminalIds[0]);
+    }
+  }, [channelTerminalIds, activeTerminalId]);
 
   const dragTerminalId = useRef<string | null>(null);
   const handleTerminalDragStart = useCallback((id: string) => { dragTerminalId.current = id; }, []);
@@ -1452,6 +1484,10 @@ function Dashboard({ masterToken }: { masterToken: string }) {
         if (exitedInst) { exitedInst.term.dispose(); delete terminalInstances.current[event.session_id]; }
         delete outputBuffers.current[event.session_id];
         break;
+      case "spawn_error":
+        setSpawnError(event.error);
+        setTimeout(() => setSpawnError(null), 5000);
+        break;
       case "landlord_update":
         setLandlords(event.landlords ?? []);
         break;
@@ -1539,9 +1575,9 @@ function Dashboard({ masterToken }: { masterToken: string }) {
     } catch {}
   }, [masterToken]);
 
-  const handleHire = useCallback((landlordId: string, cmd: string, args: string[]) => {
+  const handleHire = useCallback((landlordId: string, cmd: string, args: string[], cwd: string) => {
     if (wsRef.current && wsRef.current.readyState === 1) {
-      wsRef.current.send(JSON.stringify({ type: "spawn_agent", bridge_id: landlordId, cmd, args }));
+      wsRef.current.send(JSON.stringify({ type: "spawn_agent", bridge_id: landlordId, cmd, args, cwd }));
     }
   }, []);
 
@@ -1578,6 +1614,10 @@ function Dashboard({ masterToken }: { masterToken: string }) {
 
   const handleRenameTerminal = useCallback((sessionId: string, newName: string) => {
     setTerminalNames((prev) => ({ ...prev, [sessionId]: newName }));
+  }, []);
+
+  const handleTerminalUnmount = useCallback((sessionId: string) => {
+    delete terminalInstances.current[sessionId];
   }, []);
 
   useEffect(() => { loadFiles(selectedChannel); loadMemory(selectedChannel); }, [selectedChannel, loadFiles, loadMemory]);
@@ -1682,13 +1722,13 @@ function Dashboard({ masterToken }: { masterToken: string }) {
         <div className="sidebar-section">
           <div className="sidebar-section-header">
             Terminals
-            <span className="count">{openTerminals.size}</span>
+            <span className="count">{channelTerminalIds.length}</span>
           </div>
-          {openTerminals.size === 0 ? (
+          {channelTerminalIds.length === 0 ? (
             <div className="sidebar-empty">No active terminals</div>
           ) : (
             <div className="sidebar-terminals">
-              {sortedTerminalIds.map((sessionId) => {
+              {channelTerminalIds.map((sessionId) => {
                 const peer = peers.find((p) => p.id === sessionId);
                 const landlord = peer?.bridge_id ? landlords.find((l) => l.id === peer.bridge_id) : null;
                 const landlordLabel = landlord ? ` (${landlord.hostname || landlord.id})` : "";
@@ -1819,7 +1859,7 @@ function Dashboard({ masterToken }: { masterToken: string }) {
                 const clamped = Math.max(10, Math.min(80, pct));
                 split.style.setProperty("--top-height", `${clamped}%`);
                 requestAnimationFrame(() => {
-                  for (const id of openTerminals) {
+                  for (const id of channelTerminalIds) {
                     const inst = terminalInstances.current[id];
                     if (inst) { try { inst.fit.fit(); } catch {} }
                   }
@@ -1834,17 +1874,73 @@ function Dashboard({ masterToken }: { masterToken: string }) {
             }}
           />
 
-          {/* Terminal area — full width */}
+          {/* Terminal area — tab + grid hybrid */}
           <div className="section section-terminals">
             <div className="section-header">
               Terminals
-              <span className="count">{openTerminals.size}</span>
+              <span className="count">{channelTerminalIds.length}</span>
+              {channelTerminalIds.length > 1 && (
+                <button
+                  className="terminal-view-toggle"
+                  onClick={() => setTerminalViewMode(terminalViewMode === "tab" ? "grid" : "tab")}
+                  title={terminalViewMode === "tab" ? "Switch to grid view" : "Switch to tab view"}
+                >
+                  {terminalViewMode === "tab" ? "⊞" : "⊟"}
+                </button>
+              )}
             </div>
-            <div className="terminal-area">
-              {openTerminals.size === 0 ? (
+
+            {/* Tab bar */}
+            {channelTerminalIds.length > 0 && (
+              <div className="terminal-tab-bar">
+                {channelTerminalIds.map((sessionId) => {
+                  const peer = peers.find((p) => p.id === sessionId);
+                  const name = terminalNames[sessionId] ?? peer?.name ?? sessionId;
+                  const isActive = sessionId === activeTerminalId;
+                  return (
+                    <div
+                      key={sessionId}
+                      className={`terminal-tab${isActive ? " active" : ""}`}
+                      onClick={() => { setActiveTerminalId(sessionId); if (terminalViewMode === "grid") setTerminalViewMode("tab"); }}
+                    >
+                      <span className="terminal-tab-dot" />
+                      <span className="terminal-tab-name">{name}</span>
+                      <button
+                        className="terminal-tab-close"
+                        onClick={(e) => { e.stopPropagation(); handleKillTerminal(sessionId); }}
+                      >×</button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Terminal content */}
+            <div className={`terminal-area terminal-${terminalViewMode}`}>
+              {channelTerminalIds.length === 0 ? (
                 <div className="empty">No active terminals. Click + Hire Worker to hire an agent.</div>
+              ) : terminalViewMode === "tab" ? (
+                // Tab mode: only render active terminal, full height
+                activeTerminalId && (() => {
+                  const peer = peers.find((p) => p.id === activeTerminalId);
+                  const landlord = peer?.bridge_id ? landlords.find((l) => l.id === peer.bridge_id) : null;
+                  const landlordLabel = landlord ? ` (${landlord.hostname || landlord.id})` : "";
+                  return (
+                    <TerminalPanel
+                      key={activeTerminalId}
+                      sessionId={activeTerminalId}
+                      name={`${terminalNames[activeTerminalId] ?? peer?.name ?? activeTerminalId}${landlordLabel}`}
+                      ws={wsRef.current}
+                      onClose={() => handleKillTerminal(activeTerminalId)}
+                      onTerminalReady={handleTerminalReady}
+                      onTerminalUnmount={handleTerminalUnmount}
+                      onRename={handleRenameTerminal}
+                    />
+                  );
+                })()
               ) : (
-                sortedTerminalIds.map((sessionId) => {
+                // Grid mode: render all terminals in scrollable grid
+                channelTerminalIds.map((sessionId) => {
                   const peer = peers.find((p) => p.id === sessionId);
                   const landlord = peer?.bridge_id ? landlords.find((l) => l.id === peer.bridge_id) : null;
                   const landlordLabel = landlord ? ` (${landlord.hostname || landlord.id})` : "";
@@ -1856,6 +1952,7 @@ function Dashboard({ masterToken }: { masterToken: string }) {
                       ws={wsRef.current}
                       onClose={() => handleKillTerminal(sessionId)}
                       onTerminalReady={handleTerminalReady}
+                      onTerminalUnmount={handleTerminalUnmount}
                       onRename={handleRenameTerminal}
                       draggable
                       onDragStart={() => handleTerminalDragStart(sessionId)}
@@ -1877,6 +1974,14 @@ function Dashboard({ masterToken }: { masterToken: string }) {
           />
         )}
 
+        {/* Spawn error toast */}
+        {spawnError && (
+          <div className="toast-error" onClick={() => setSpawnError(null)}>
+            <span className="toast-error-icon">!</span>
+            {spawnError}
+          </div>
+        )}
+
         {/* Budget settings dialog */}
         {showBudgetDialog && budget && (
           <BudgetSettingsDialog
@@ -1884,6 +1989,7 @@ function Dashboard({ masterToken }: { masterToken: string }) {
             masterToken={masterToken}
             onClose={() => setShowBudgetDialog(false)}
           />
+
         )}
       </div>
 
