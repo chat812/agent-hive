@@ -62,6 +62,8 @@ struct Peer {
     role: String,
     registered_at: String,
     last_seen: String,
+    #[serde(default)]
+    bridge_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -145,15 +147,21 @@ struct BrokerClient {
     http: Client,
     broker_url: String,
     token: Mutex<Option<String>>,
+    master_key: Mutex<Option<String>>,
 }
 
 impl BrokerClient {
-    fn new(broker_url: String) -> Self {
+    fn new(broker_url: String, master_key: Option<String>) -> Self {
         Self {
             http: Client::new(),
             broker_url,
             token: Mutex::new(None),
+            master_key: Mutex::new(master_key),
         }
+    }
+
+    async fn set_master_key(&self, key: String) {
+        *self.master_key.lock().await = Some(key);
     }
 
     async fn set_token(&self, token: String) {
@@ -208,6 +216,25 @@ impl BrokerClient {
         }
         res.json().await
             .map_err(|e| format!("Broker response parse error ({}): {}", path, e))
+    }
+
+    async fn admin_post<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &impl Serialize,
+    ) -> Result<T, String> {
+        let key = self.master_key.lock().await.clone();
+        let mut req = self.http.post(format!("{}{}", self.broker_url, path)).json(body);
+        if let Some(ref k) = key {
+            req = req.bearer_auth(k);
+        }
+        let res = req.send().await.map_err(|e| format!("Admin request failed ({}): {}", path, e))?;
+        if !res.status().is_success() {
+            let status = res.status();
+            let text = res.text().await.unwrap_or_default();
+            return Err(format!("Admin error ({}): {} {}", path, status, text));
+        }
+        res.json().await.map_err(|e| format!("Admin parse error ({}): {}", path, e))
     }
 
     async fn health_check(&self) -> bool {
@@ -413,6 +440,21 @@ struct ReportIssueParams {
     #[schemars(description = "Describe your concern, blocker, or refusal reason. This is forwarded to Master automatically.")]
     #[serde(alias = "description", alias = "issue", alias = "text")]
     message: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct HireWorkerParams {
+    #[schemars(description = "Command to run on the landlord machine, e.g. 'freecc' or 'claude'")]
+    cmd: String,
+    #[schemars(description = "Arguments for the command")]
+    args: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct KillAgentParams {
+    #[schemars(description = "The peer ID of the agent to kill")]
+    #[serde(alias = "peer_id", alias = "id")]
+    agent_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1200,6 +1242,109 @@ impl CoworkerServer {
         match self.broker.post::<SendResult>("/send-message", &body).await {
             Ok(r) if r.ok => format!("Issue reported to Master ({})", to_id),
             Ok(r) => format!("Failed to report: {}", r.error.unwrap_or_default()),
+            Err(e) => format!("Error: {}", e),
+        }
+    }
+
+    #[tool(
+        name = "hire_worker",
+        description = "Hire a new worker agent on the best available landlord. Automatically selects the landlord with the lowest CPU and highest free RAM. Requires master key."
+    )]
+    async fn hire_worker(
+        &self,
+        Parameters(HireWorkerParams { cmd, args }): Parameters<HireWorkerParams>,
+    ) -> String {
+        self.touch_activity();
+
+        // Get landlords with stats
+        let landlords: Vec<serde_json::Value> = match self.broker.admin_post("/admin/landlords", &serde_json::json!({})).await {
+            Ok(v) => v,
+            Err(e) => return format!("Error getting landlords: {} (master key required)", e),
+        };
+
+        if landlords.is_empty() {
+            return "No landlords connected. Start a landlord first.".to_string();
+        }
+
+        // Score: prefer lower CPU, more free RAM, more free disk
+        let best = landlords.iter().max_by(|a, b| {
+            let score = |l: &serde_json::Value| -> f64 {
+                let cpu = l.get("cpu_pct").and_then(|v| v.as_f64()).unwrap_or(50.0);
+                let ram = l.get("ram_free").and_then(|v| v.as_u64()).unwrap_or(0) as f64;
+                (100.0 - cpu) + (ram / 1e9) * 2.0
+            };
+            score(a).partial_cmp(&score(b)).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let landlord = match best {
+            Some(l) => l,
+            None => return "No suitable landlord found".to_string(),
+        };
+
+        let bridge_id = landlord.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let hostname = landlord.get("hostname").and_then(|v| v.as_str()).unwrap_or("unknown");
+
+        let body = serde_json::json!({
+            "bridge_id": bridge_id,
+            "cmd": cmd,
+            "args": args.unwrap_or_default(),
+        });
+
+        match self.broker.admin_post::<serde_json::Value>("/admin/spawn-agent", &body).await {
+            Ok(v) => {
+                if v.get("ok").and_then(|o| o.as_bool()).unwrap_or(false) {
+                    format!("Hired worker on {} ({})", hostname, bridge_id)
+                } else {
+                    format!("Spawn failed: {}", v.get("error").and_then(|e| e.as_str()).unwrap_or("unknown"))
+                }
+            }
+            Err(e) => format!("Error: {}", e),
+        }
+    }
+
+    #[tool(
+        name = "kill_agent",
+        description = "Kill an agent by peer ID. Sends kill command to the agent's landlord."
+    )]
+    async fn kill_agent(
+        &self,
+        Parameters(KillAgentParams { agent_id }): Parameters<KillAgentParams>,
+    ) -> String {
+        self.touch_activity();
+        let state = self.state.lock().await;
+        let list_body = serde_json::json!({
+            "scope": "all",
+            "cwd": state.cwd,
+            "git_root": state.git_root,
+        });
+        drop(state);
+
+        let peers: Vec<Peer> = match self.broker.post("/list-peers", &list_body).await {
+            Ok(v) => v,
+            Err(e) => return format!("Error finding agent: {}", e),
+        };
+
+        let agent = peers.iter().find(|p| p.id == agent_id);
+        let agent = match agent {
+            Some(a) => a,
+            None => return format!("Agent {} not found", agent_id),
+        };
+
+        let bridge_id = match &agent.bridge_id {
+            Some(bid) if !bid.is_empty() => bid.clone(),
+            _ => {
+                // Direct peer, use remove-peer
+                match self.broker.admin_post::<serde_json::Value>("/admin/remove-peer", &serde_json::json!({ "peer_id": agent_id })).await {
+                    Ok(v) => return format!("Agent removed: {:?}", v),
+                    Err(e) => return format!("Error: {}", e),
+                };
+            }
+        };
+
+        match self.broker.admin_post::<serde_json::Value>("/admin/kill-agent", &serde_json::json!({
+            "bridge_id": bridge_id, "session_id": agent_id
+        })).await {
+            Ok(v) => format!("Kill command sent: {:?}", v),
             Err(e) => format!("Error: {}", e),
         }
     }
@@ -1995,13 +2140,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let harness = env::var("AGENT_HIVE_HARNESS").unwrap_or_else(|_| "claude-code".to_string());
 
-    let broker = Arc::new(BrokerClient::new(broker_url.clone()));
+    let master_key = env::var("AGENT_HIVE_TOKEN").ok().or_else(|| read_master_key());
+    let broker = Arc::new(BrokerClient::new(broker_url.clone(), master_key.clone()));
 
     // Set initial token from env or master key file
     if let Ok(token) = env::var("AGENT_HIVE_TOKEN") {
         broker.set_token(token).await;
-    } else if let Some(key) = read_master_key() {
-        broker.set_token(key).await;
+    } else if let Some(ref key) = master_key {
+        broker.set_token(key.clone()).await;
         log("Using master key from ~/.agent-hive.key");
     }
 

@@ -45,4 +45,3 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # Rust build artifacts
 bridge/target/
 coworker/target/
-master-mind/target/

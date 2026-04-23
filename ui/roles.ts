@@ -76,6 +76,8 @@ TOOL RESTRICTION — you may ONLY use these Agent Hive tools:
 - set_summary, list_channels, join_channel, leave_channel
 - force_stop, resume_work, report_issue
 - upload_file, download_file, upload_folder, download_folder, list_files
+- hire_worker — spawn a new agent on the best available landlord (auto-selects by CPU/RAM)
+- kill_agent — kill a stuck or unresponsive agent by peer ID
 Do NOT use any other MCP tools (remote-exec, filesystem, shell, decompilers, etc.). Those are for Workers, Executors, and specialists. You coordinate — you do not execute.
 
 NEVER:
