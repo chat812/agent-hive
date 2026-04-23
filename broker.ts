@@ -1153,6 +1153,27 @@ Bun.serve({
       return Response.json({ ok: true });
     }
 
+    // Resync: ask a landlord (or all) to re-register running agents
+    if (path === "/admin/resync") {
+      if (!isMasterKey(authHeader)) {
+        return Response.json({ error: "Master key required" }, { status: 403 });
+      }
+      const body = await req.json() as { bridge_id?: string };
+      let count = 0;
+      if (body.bridge_id) {
+        const ws = wsLandlords.get(body.bridge_id);
+        if (!ws) return Response.json({ error: "Landlord not connected" }, { status: 404 });
+        ws.send(JSON.stringify({ type: "resync_agents" }));
+        count = 1;
+      } else {
+        for (const [, ws] of wsLandlords) {
+          ws.send(JSON.stringify({ type: "resync_agents" }));
+          count++;
+        }
+      }
+      return Response.json({ ok: true, landlords: count });
+    }
+
     if (path === "/file-delete") {
       if (!isMasterKey(authHeader)) return Response.json({ error: "Master key required" }, { status: 403 });
       const body = await req.json() as { file_id: string };
@@ -1473,6 +1494,17 @@ case "/set-role": {
             const now = new Date().toISOString();
             const peerName = payload.name || `agent-${id.slice(0, 4)}`;
 
+            // Check if peer already exists (re-registration after reconnect)
+            const existing = selectPeerById.get(id) as Peer | null;
+            if (existing) {
+              // Reactivate existing peer
+              db.run("UPDATE peers SET status = 'approved', bridge_id = ?, last_seen = ? WHERE id = ?", [bridgeId, now, id]);
+              const peer = { ...existing, status: "approved", bridge_id: bridgeId, last_seen: now } as Peer;
+              broadcast({ type: "peer_joined", peer });
+              console.error(`[broker] Landlord agent re-registered: ${peerName} (${id}) on landlord ${bridgeId}`);
+              return;
+            }
+
             // Remove any existing registration for same PID+hostname
             if (payload.pid && payload.hostname) {
               const existingByPid = db
@@ -1497,6 +1529,30 @@ case "/set-role": {
             const peer = { ...selectPeerById.get(id), bridge_id: bridgeId } as Peer;
             broadcast({ type: "peer_joined", peer });
             console.error(`[broker] Landlord agent registered: ${peerName} (${id}) on landlord ${bridgeId}`);
+            return;
+          }
+
+          // Resync: landlord re-registers all running agents
+          if (payload.type === "resync") {
+            const agents = payload.agents as Array<{ id: string; name: string; pid: number; harness: string; hostname: string }> || [];
+            console.error(`[broker] Landlord ${bridgeId} resync: ${agents.length} agent(s)`);
+            for (const agent of agents) {
+              const now2 = new Date().toISOString();
+              const existing = selectPeerById.get(agent.id) as Peer | null;
+              if (existing) {
+                db.run("UPDATE peers SET status = 'approved', bridge_id = ?, last_seen = ? WHERE id = ?", [bridgeId, now2, agent.id]);
+                broadcast({ type: "peer_joined", peer: { ...existing, status: "approved", bridge_id: bridgeId, last_seen: now2 } });
+              } else {
+                try {
+                  insertPeer.run(agent.id, agent.name || `agent-${agent.id.slice(0, 4)}`, agent.pid || 0, "", null, null, agent.harness || "claude-code", agent.hostname || "", "", now2, now2);
+                  db.run("UPDATE peers SET bridge_id = ?, status = 'approved' WHERE id = ?", [bridgeId, agent.id]);
+                  const token = generateToken(32);
+                  insertToken.run(token, agent.id, now2);
+                  broadcast({ type: "peer_joined", peer: { ...selectPeerById.get(agent.id), bridge_id: bridgeId } });
+                } catch {}
+              }
+            }
+            broadcast({ type: "landlord_update", landlords: getLandlordList() });
             return;
           }
 

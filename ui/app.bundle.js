@@ -32021,12 +32021,28 @@ function Dashboard({ masterToken }) {
                     title: `Remove ${channelOffline.length} offline peer${channelOffline.length !== 1 ? "s" : ""}`,
                     children: "Clear Inactive"
                   }, undefined, false, undefined, this),
-                  landlords.length > 0 && /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
-                    className: "btn btn-spawn",
-                    onClick: () => setShowSpawnDialog(true),
-                    title: "Hire a worker on a landlord",
-                    children: "+ Hire Worker"
-                  }, undefined, false, undefined, this)
+                  landlords.length > 0 && /* @__PURE__ */ jsx_dev_runtime.jsxDEV(jsx_dev_runtime.Fragment, {
+                    children: [
+                      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
+                        className: "btn",
+                        onClick: async () => {
+                          await fetch("/admin/resync", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
+                            body: JSON.stringify({})
+                          });
+                        },
+                        title: "Reconnect all terminals from landlords",
+                        children: "Resync"
+                      }, undefined, false, undefined, this),
+                      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
+                        className: "btn btn-spawn",
+                        onClick: () => setShowSpawnDialog(true),
+                        title: "Hire a worker on a landlord",
+                        children: "+ Hire Worker"
+                      }, undefined, false, undefined, this)
+                    ]
+                  }, undefined, true, undefined, this)
                 ]
               }, undefined, true, undefined, this)
             ]

@@ -167,6 +167,26 @@ async fn handle_broker_message(
             }
             false
         }
+        "resync_agents" => {
+            let m = mgr.lock().await;
+            let agents: Vec<Value> = m.agents.iter().map(|(id, agent)| {
+                serde_json::json!({
+                    "id": id,
+                    "name": format!("agent-{}", id),
+                    "pid": agent.pid,
+                    "harness": "claude-code",
+                    "hostname": hostname::get().map(|h| h.to_string_lossy().to_string()).unwrap_or_default(),
+                })
+            }).collect();
+            let msg = serde_json::json!({
+                "type": "resync",
+                "agents": agents,
+            });
+            let mut tx = broker_tx.lock().await;
+            tx.send(&msg).await;
+            println!("Resynced {} agent(s) with broker", m.agents.len());
+            false
+        }
         _ => false,
     }
 }

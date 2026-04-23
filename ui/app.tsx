@@ -1656,7 +1656,16 @@ function Dashboard({ masterToken }: { masterToken: string }) {
               }} title={`Remove ${channelOffline.length} offline peer${channelOffline.length !== 1 ? "s" : ""}`}>Clear Inactive</button>
             )}
             {landlords.length > 0 && (
-              <button className="btn btn-spawn" onClick={() => setShowSpawnDialog(true)} title="Hire a worker on a landlord">+ Hire Worker</button>
+              <>
+                <button className="btn" onClick={async () => {
+                  await fetch("/admin/resync", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${masterToken}` },
+                    body: JSON.stringify({}),
+                  });
+                }} title="Reconnect all terminals from landlords">Resync</button>
+                <button className="btn btn-spawn" onClick={() => setShowSpawnDialog(true)} title="Hire a worker on a landlord">+ Hire Worker</button>
+              </>
             )}
           </div>
         </header>
