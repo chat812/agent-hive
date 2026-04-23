@@ -6,20 +6,24 @@ use tokio::sync::Mutex;
 use crate::client::BrokerSender;
 use crate::spawn::AgentProcess;
 
+pub type SharedSender = Arc<Mutex<Arc<Mutex<BrokerSender>>>>;
+
 pub struct AgentManager {
     pub bridge_id: String,
     pub broker_url: String,
     pub coworker_path: Option<String>,
     pub agents: HashMap<String, AgentProcess>,
+    sender_ref: SharedSender,
 }
 
 impl AgentManager {
-    pub fn new(bridge_id: String, broker_url: String, coworker_path: Option<String>) -> Self {
+    pub fn new(bridge_id: String, broker_url: String, coworker_path: Option<String>, sender_ref: SharedSender) -> Self {
         Self {
             bridge_id,
             broker_url,
             coworker_path,
             agents: HashMap::new(),
+            sender_ref,
         }
     }
 
@@ -28,7 +32,6 @@ impl AgentManager {
         cmd: String,
         args: Vec<String>,
         cwd: Option<String>,
-        broker_tx: &Arc<Mutex<BrokerSender>>,
     ) -> Result<String> {
         crate::validate_spawn_command(&cmd)?;
 
@@ -52,19 +55,23 @@ impl AgentManager {
             "harness": "claude-code",
             "hostname": hostname::get().map(|h| h.to_string_lossy().to_string()).unwrap_or_default(),
         });
-        let mut broker = broker_tx.lock().await;
-        broker.send(&msg).await;
-        drop(broker);
+        let inner = self.sender_ref.lock().await.clone();
+        let mut tx = inner.lock().await;
+        if !tx.send(&msg).await {
+            eprintln!("Warning: failed to register agent {} — broker connection may be down", id);
+        }
+        drop(tx);
 
         // Start forwarding PTY output to broker in a background thread
         if let Some(reader) = agent.take_reader() {
             let session_id = id.clone();
-            let broker_tx_clone = broker_tx.clone();
+            let sender_ref = self.sender_ref.clone();
             let rt = tokio::runtime::Handle::current();
             std::thread::spawn(move || {
                 use std::io::Read;
                 let mut reader: Box<dyn std::io::Read + Send> = reader;
                 let mut buf = [0u8; 4096];
+                let mut consecutive_failures: u32 = 0;
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) => break,
@@ -75,10 +82,20 @@ impl AgentManager {
                                 "session_id": session_id,
                                 "data": data,
                             });
-                            rt.block_on(async {
-                                let mut tx = broker_tx_clone.lock().await;
-                                tx.send(&msg).await;
+                            let sent = rt.block_on(async {
+                                let inner = sender_ref.lock().await.clone();
+                                let mut tx = inner.lock().await;
+                                tx.send(&msg).await
                             });
+                            if sent {
+                                consecutive_failures = 0;
+                            } else {
+                                consecutive_failures += 1;
+                                if consecutive_failures >= 10 {
+                                    eprintln!("Agent {} PTY reader: 10 consecutive send failures, stopping", session_id);
+                                    break;
+                                }
+                            }
                         }
                         Err(_) => break,
                     }
@@ -89,7 +106,8 @@ impl AgentManager {
                     "session_id": session_id,
                 });
                 rt.block_on(async {
-                    let mut tx = broker_tx_clone.lock().await;
+                    let inner = sender_ref.lock().await.clone();
+                    let mut tx = inner.lock().await;
                     tx.send(&exit_msg).await;
                 });
                 println!("Agent {} PTY closed", session_id);
@@ -103,7 +121,6 @@ impl AgentManager {
     pub async fn kill_agent(
         &mut self,
         id: &str,
-        _broker_tx: &Arc<Mutex<BrokerSender>>,
     ) -> Result<()> {
         if let Some(mut agent) = self.agents.remove(id) {
             agent.kill()?;
@@ -122,10 +139,10 @@ impl AgentManager {
         }
     }
 
-    pub async fn shutdown(&mut self, broker_tx: &Arc<Mutex<BrokerSender>>) {
+    pub async fn shutdown(&mut self) {
         let ids: Vec<String> = self.agents.keys().cloned().collect();
         for id in ids {
-            let _ = self.kill_agent(&id, broker_tx).await;
+            let _ = self.kill_agent(&id).await;
         }
     }
 

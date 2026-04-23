@@ -206,21 +206,26 @@ async fn main() -> Result<()> {
 
     // Keep the HTTP version of the broker URL for passing to spawned agents
     let broker_url_http = broker_url.replace("ws://", "http://").replace("wss://", "https://");
+
+    // Shared sender reference — PTY reader threads read through this indirection.
+    // On reconnect, we swap the inner Arc so all PTY threads pick up the new sender.
+    let shared_sender: manager::SharedSender = Arc::new(Mutex::new(Arc::new(Mutex::new(
+        client::BrokerSender::new_placeholder()
+    ))));
+
     let mgr = Arc::new(Mutex::new(manager::AgentManager::new(
         bridge_id.clone(),
         broker_url_http,
         coworker_path,
+        shared_sender.clone(),
     )));
 
-    // Start local gateway for coworkers
+    // Start local gateway for coworkers — gateway also uses shared_sender
     let mgr_gateway = mgr.clone();
+    let gateway_sender = shared_sender.clone();
     let gateway_port = local_port;
     tokio::spawn(async move {
-        // Gateway will be started after broker connection is established
-        // For now, start it eagerly
-        let _ = gateway::start(gateway_port, mgr_gateway, Arc::new(Mutex::new(
-            client::BrokerSender::new_placeholder()
-        ))).await;
+        let _ = gateway::start(gateway_port, mgr_gateway, gateway_sender).await;
     });
 
     // Reconnect loop
@@ -241,8 +246,11 @@ async fn main() -> Result<()> {
                 let broker_tx = Arc::new(Mutex::new(client::BrokerSender::new(ws_sink)));
                 let broker_rx = Arc::new(Mutex::new(ws_stream));
 
-                // Update gateway broker sender
-                // (gateway was started with a placeholder, but broker_tx is the real one)
+                // Swap the shared sender — all PTY reader threads will now use this one
+                {
+                    let new_sender = broker_tx.clone();
+                    *shared_sender.lock().await = new_sender;
+                }
 
                 // Start broker message reader
                 let mgr_clone = mgr.clone();
@@ -254,7 +262,6 @@ async fn main() -> Result<()> {
                 let stdin = tokio::io::BufReader::new(tokio::io::stdin());
                 let mut lines = stdin.lines();
 
-                let broker_tx_clone = broker_tx.clone();
                 let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let done_clone = done.clone();
 
@@ -283,7 +290,7 @@ async fn main() -> Result<()> {
                                             let cmd = parts[1].clone();
                                             let args: Vec<String> = parts[2..].to_vec();
                                             let mut m = mgr.lock().await;
-                                            match m.spawn_agent(cmd, args, None, &broker_tx_clone).await {
+                                            match m.spawn_agent(cmd, args, None).await {
                                                 Ok(id) => println!("Spawned agent: {}", id),
                                                 Err(e) => eprintln!("Spawn failed: {}", e),
                                             }
@@ -294,7 +301,7 @@ async fn main() -> Result<()> {
                                                 continue;
                                             }
                                             let mut m = mgr.lock().await;
-                                            match m.kill_agent(&parts[1], &broker_tx_clone).await {
+                                            match m.kill_agent(&parts[1]).await {
                                                 Ok(()) => println!("Killed agent: {}", parts[1]),
                                                 Err(e) => eprintln!("Kill failed: {}", e),
                                             }
@@ -311,7 +318,7 @@ async fn main() -> Result<()> {
                                         "quit" | "exit" => {
                                             println!("Shutting down...");
                                             let mut m = mgr.lock().await;
-                                            m.shutdown(&broker_tx_clone).await;
+                                            m.shutdown().await;
                                             return Ok(());
                                         }
                                         _ => println!("Unknown command: {}", parts[0]),

@@ -39,12 +39,15 @@ impl BrokerSender {
         Self { sink: None }
     }
 
-    pub async fn send(&mut self, msg: &Value) {
+    pub async fn send(&mut self, msg: &Value) -> bool {
         if let Some(sink) = &mut self.sink {
             let text = serde_json::to_string(msg).unwrap_or_default();
-            let _ = futures_util::SinkExt::send(sink, Message::Text(text.into())).await;
+            futures_util::SinkExt::send(sink, Message::Text(text.into())).await.is_ok()
+        } else {
+            false
         }
     }
+
 }
 
 pub async fn connect(
@@ -156,7 +159,7 @@ async fn handle_broker_message(
                 .map(String::from);
             if !cmd.is_empty() {
                 let mut m = mgr.lock().await;
-                match m.spawn_agent(cmd, args, cwd, broker_tx).await {
+                match m.spawn_agent(cmd, args, cwd).await {
                     Ok(id) => println!("Spawned agent from broker request: {}", id),
                     Err(e) => {
                         eprintln!("Spawn from broker failed: {}", e);
@@ -173,7 +176,7 @@ async fn handle_broker_message(
             let session_id = msg.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
             if !session_id.is_empty() {
                 let mut m = mgr.lock().await;
-                let _ = m.kill_agent(session_id, broker_tx).await;
+                let _ = m.kill_agent(session_id).await;
             }
             false
         }

@@ -264,6 +264,8 @@ const wsAgents = new Map<string, any>(); // peerId → ServerWebSocket
 const wsLandlords = new Map<string, any>(); // landlordId → ServerWebSocket (approved)
 const wsPendingLandlords = new Map<string, any>(); // landlordId → ServerWebSocket (pending approval)
 const landlordCwds = new Map<string, string>(); // landlordId → cwd
+const landlordLastActivity = new Map<string, number>(); // landlordId → last message/ping timestamp
+const LANDLORD_IDLE_TIMEOUT_MS = 30_000; // 30s — consider dead if no activity
 
 // Terminal output buffer — stores all output per session for dashboard reconnect
 const terminalBuffers = new Map<string, string[]>(); // sessionId → hex-encoded chunks
@@ -328,15 +330,31 @@ setInterval(() => {
 
 // Ping landlords every 5s to detect dead connections and keep agents alive
 setInterval(() => {
+  const now = Date.now();
   for (const [bridgeId, ws] of wsLandlords) {
+    const lastActivity = landlordLastActivity.get(bridgeId) ?? 0;
+    if (now - lastActivity > LANDLORD_IDLE_TIMEOUT_MS) {
+      // No activity for 30s — connection is dead
+      console.error(`[broker] Landlord ${bridgeId} idle timeout (no activity for ${Math.round((now - lastActivity) / 1000)}s)`);
+      wsLandlords.delete(bridgeId);
+      landlordCwds.delete(bridgeId);
+      landlordLastActivity.delete(bridgeId);
+      // Remove all agents belonging to this landlord
+      const landlordAgents = (selectAllPeersAny.all() as Peer[]).filter(p => p.bridge_id === bridgeId);
+      for (const agent of landlordAgents) {
+        terminalBuffers.delete(agent.id);
+        removePeer(agent.id);
+        broadcast({ type: "agent_exited", session_id: agent.id });
+      }
+      broadcast({ type: "landlord_update", landlords: getLandlordList() });
+      continue;
+    }
     try {
       ws.ping();
-      // Keep landlord agents alive — update last_seen for all peers on this landlord
-      const now = new Date().toISOString();
-      db.run("UPDATE peers SET last_seen = ? WHERE bridge_id = ? AND status = 'approved'", [now, bridgeId]);
     } catch {
       wsLandlords.delete(bridgeId);
       landlordCwds.delete(bridgeId);
+      landlordLastActivity.delete(bridgeId);
       broadcast({ type: "landlord_update", landlords: getLandlordList() });
     }
   }
@@ -1413,6 +1431,7 @@ case "/set-role": {
           const existing = wsLandlords.get(bridgeId);
           if (existing) { try { existing.close(); } catch {} }
           wsLandlords.set(bridgeId, ws);
+          landlordLastActivity.set(bridgeId, Date.now());
           if (landlordCwd) landlordCwds.set(bridgeId, landlordCwd);
           console.error(`[broker] Landlord WS connected: ${bridgeId}`);
           broadcast({ type: "landlord_update", landlords: getLandlordList() });
@@ -1499,6 +1518,7 @@ case "/set-role": {
         try {
           const payload = JSON.parse(message as string);
           const bridgeId = data.bridgeId;
+          landlordLastActivity.set(bridgeId, Date.now());
 
           // Agent registration from bridge — auto-approve
           if (payload.type === "register") {
@@ -1542,6 +1562,9 @@ case "/set-role": {
             let buf = terminalBuffers.get(payload.session_id);
             if (!buf) { buf = []; terminalBuffers.set(payload.session_id, buf); }
             buf.push(payload.data);
+            // Keep agent alive — update last_seen on real output
+            const now = new Date().toISOString();
+            db.run("UPDATE peers SET last_seen = ? WHERE id = ? AND status = 'approved'", [now, payload.session_id]);
             broadcast({ type: "terminal_output", session_id: payload.session_id, data: payload.data });
             return;
           }
@@ -1581,6 +1604,7 @@ case "/set-role": {
         if (approved) {
           wsLandlords.delete(bridgeId);
           landlordCwds.delete(bridgeId);
+          landlordLastActivity.delete(bridgeId);
           console.error(`[broker] Landlord WS disconnected: ${bridgeId}`);
           // Remove all agents belonging to this landlord
           const landlordAgents = (selectAllPeersAny.all() as Peer[]).filter(p => p.bridge_id === bridgeId);

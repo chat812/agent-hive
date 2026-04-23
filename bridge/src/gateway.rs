@@ -10,26 +10,26 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
-use crate::client::BrokerSender;
 use crate::manager::AgentManager;
+use crate::manager::SharedSender;
 
 pub async fn start(
     port: u16,
     _mgr: Arc<Mutex<AgentManager>>,
-    broker_tx: Arc<Mutex<BrokerSender>>,
+    sender_ref: SharedSender,
 ) -> Result<()> {
     let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
     println!("Local gateway listening on http://127.0.0.1:{}", port);
 
     loop {
         let (stream, _) = listener.accept().await?;
-        let broker_tx = broker_tx.clone();
+        let sender_ref = sender_ref.clone();
 
         tokio::spawn(async move {
             let io = TokioIo::new(stream);
             let service = service_fn(move |req: Request<Incoming>| {
-                let broker_tx = broker_tx.clone();
-                handle_request(req, broker_tx)
+                let sender_ref = sender_ref.clone();
+                handle_request(req, sender_ref)
             });
 
             if let Err(e) = http1::Builder::new().serve_connection(io, service).await {
@@ -41,7 +41,7 @@ pub async fn start(
 
 async fn handle_request(
     req: Request<Incoming>,
-    broker_tx: Arc<Mutex<BrokerSender>>,
+    sender_ref: SharedSender,
 ) -> Result<Response<String>, hyper::Error> {
     let (parts, body) = req.into_parts();
     let path = parts.uri.path().to_string();
@@ -49,8 +49,6 @@ async fn handle_request(
     let body_bytes = body.collect().await?.to_bytes();
     let body_val: Value = serde_json::from_slice(&body_bytes).unwrap_or(Value::Null);
 
-    // Forward API requests to broker
-    let mut broker = broker_tx.lock().await;
     let request_id = hex::encode(&uuid::Uuid::new_v4().as_bytes()[..4]);
 
     let api_request = serde_json::json!({
@@ -61,6 +59,8 @@ async fn handle_request(
         "body": body_val,
     });
 
+    let inner = sender_ref.lock().await.clone();
+    let mut broker = inner.lock().await;
     broker.send(&api_request).await;
     drop(broker);
 
