@@ -247,7 +247,8 @@ const wsAgents = new Map<string, any>(); // peerId → ServerWebSocket
 
 const wsLandlords = new Map<string, any>(); // landlordId → ServerWebSocket (approved)
 const wsPendingLandlords = new Map<string, any>(); // landlordId → ServerWebSocket (pending approval)
-const landlordStats = new Map<string, { disk_free: number; ram_free: number; cpu_pct: number }>();
+const landlordStats = new Map<string, { disk_free: number; ram_free: number; cpu_pct: number; ts: number }>();
+const landlordStatsBroadcast = new Map<string, number>(); // landlordId → last broadcast timestamp
 
 // Terminal output buffer — stores all output per session for dashboard reconnect
 const terminalBuffers = new Map<string, string[]>(); // sessionId → hex-encoded chunks
@@ -1579,11 +1580,16 @@ case "/set-role": {
             return;
           }
 
-          // System stats from landlord
+          // System stats from landlord — broadcast every 15s (throttled)
           if (payload.type === "system_stats") {
-            const st = { disk_free: payload.disk_free ?? 0, ram_free: payload.ram_free ?? 0, cpu_pct: payload.cpu_pct ?? 0 };
+            const st = { disk_free: payload.disk_free ?? 0, ram_free: payload.ram_free ?? 0, cpu_pct: payload.cpu_pct ?? 0, ts: Date.now() };
             landlordStats.set(bridgeId, st);
-            // Don't broadcast every 5s — just update the map. Dashboard gets stats on next landlord_update or snapshot.
+            // Broadcast throttled: at most once per 15s per landlord
+            const lastBroadcast = landlordStatsBroadcast.get(bridgeId) ?? 0;
+            if (Date.now() - lastBroadcast > 15000) {
+              landlordStatsBroadcast.set(bridgeId, Date.now());
+              broadcast({ type: "landlord_update", landlords: getLandlordList() });
+            }
             return;
           }
         } catch {}
@@ -1600,6 +1606,7 @@ case "/set-role": {
         if (approved) {
           wsLandlords.delete(bridgeId);
           landlordStats.delete(bridgeId);
+          landlordStatsBroadcast.delete(bridgeId);
           console.error(`[broker] Landlord WS disconnected: ${bridgeId}`);
           // Mark agents offline (don't remove — landlord may reconnect and reclaim them)
           const landlordAgents = (selectAllPeersAny.all() as Peer[]).filter(p => p.bridge_id === bridgeId && p.status === "approved");
