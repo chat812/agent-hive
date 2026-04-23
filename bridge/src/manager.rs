@@ -26,13 +26,18 @@ impl AgentManager {
     pub async fn spawn_agent(
         &mut self,
         cmd: String,
-        args: Vec<String>,
+        mut args: Vec<String>,
         broker_tx: &Arc<Mutex<BrokerSender>>,
     ) -> Result<String> {
         // Auto-setup MCP config for harness commands
         if let Some(ref coworker) = self.coworker_path {
             if crate::is_harness_command(&cmd) {
                 crate::ensure_mcp_config(coworker);
+                // Auto-append channel flag if not present
+                if !args.iter().any(|a| a.contains("dangerously-load-development-channels")) {
+                    args.push("--dangerously-load-development-channels".to_string());
+                    args.push("server:agent-hive".to_string());
+                }
             }
         }
 
