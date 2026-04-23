@@ -30,7 +30,7 @@ impl AgentManager {
     pub async fn spawn_agent(
         &mut self,
         cmd: String,
-        args: Vec<String>,
+        mut args: Vec<String>,
         cwd: Option<String>,
     ) -> Result<String> {
         crate::validate_spawn_command(&cmd)?;
@@ -39,6 +39,11 @@ impl AgentManager {
         if let Some(ref coworker) = self.coworker_path {
             if crate::is_harness_command(&cmd) {
                 crate::ensure_mcp_config(coworker);
+                // Auto-append channel flag if not present
+                if !args.iter().any(|a| a.contains("dangerously-load-development-channels")) {
+                    args.push("--dangerously-load-development-channels".to_string());
+                    args.push("server:agent-hive".to_string());
+                }
             }
         }
 
@@ -116,6 +121,28 @@ impl AgentManager {
 
         self.agents.insert(id.clone(), agent);
         Ok(id)
+    }
+
+    /// Re-register all running agents with the broker after reconnect.
+    pub async fn re_register_all(&self) {
+        if self.agents.is_empty() { return; }
+        println!("Re-registering {} running agent(s)...", self.agents.len());
+        for (id, agent) in &self.agents {
+            let msg = serde_json::json!({
+                "type": "register",
+                "id": id,
+                "name": format!("agent-{}", id),
+                "pid": agent.pid,
+                "bridge_id": self.bridge_id,
+                "harness": "claude-code",
+                "hostname": hostname::get().map(|h| h.to_string_lossy().to_string()).unwrap_or_default(),
+            });
+            let inner = self.sender_ref.lock().await.clone();
+            let mut tx = inner.lock().await;
+            if !tx.send(&msg).await {
+                eprintln!("Warning: failed to re-register agent {}", id);
+            }
+        }
     }
 
     pub async fn kill_agent(
