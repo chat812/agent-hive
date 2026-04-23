@@ -30840,6 +30840,14 @@ function peerColor(name) {
     h2 = (Math.imul(h2, 33) ^ name.charCodeAt(i)) >>> 0;
   return PEER_COLORS[h2 % PEER_COLORS.length];
 }
+function formatBytes(bytes) {
+  if (bytes <= 0)
+    return "0B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const val = bytes / Math.pow(1024, i);
+  return `${val.toFixed(i === 0 ? 0 : 1)}${units[i]}`;
+}
 function RoleEmoji({ role }) {
   const icon = getRoleIcon(role ?? "");
   if (!icon)
@@ -31838,19 +31846,37 @@ function Dashboard({ masterToken }) {
                 children: [
                   landlords.map((l3) => /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
                     className: "sidebar-terminal-item",
+                    style: { flexDirection: "column", alignItems: "flex-start" },
                     children: [
-                      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
-                        className: "sidebar-terminal-dot"
-                      }, undefined, false, undefined, this),
-                      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
-                        className: "sidebar-terminal-name",
-                        title: l3.id,
-                        children: l3.hostname || l3.id
-                      }, undefined, false, undefined, this),
-                      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
-                        className: "sidebar-terminal-agents",
-                        children: l3.agents
-                      }, undefined, false, undefined, this)
+                      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+                        style: { display: "flex", alignItems: "center", gap: 6, width: "100%" },
+                        children: [
+                          /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                            className: "sidebar-terminal-dot"
+                          }, undefined, false, undefined, this),
+                          /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                            className: "sidebar-terminal-name",
+                            title: l3.id,
+                            children: l3.hostname || l3.id
+                          }, undefined, false, undefined, this),
+                          /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+                            className: "sidebar-terminal-agents",
+                            children: l3.agents
+                          }, undefined, false, undefined, this)
+                        ]
+                      }, undefined, true, undefined, this),
+                      l3.cpu_pct != null && /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
+                        className: "sidebar-landlord-stats",
+                        children: [
+                          "CPU ",
+                          l3.cpu_pct.toFixed(0),
+                          "% · ",
+                          (l3.ram_free ?? 0 / (1 << 30)).toFixed ? formatBytes(l3.ram_free ?? 0) : "—",
+                          " free · ",
+                          formatBytes(l3.disk_free ?? 0),
+                          " free"
+                        ]
+                      }, undefined, true, undefined, this)
                     ]
                   }, l3.id, true, undefined, this)),
                   pendingLandlords.map((l3) => /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {

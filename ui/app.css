@@ -213,6 +213,13 @@ body {
   margin-right: 2px;
 }
 
+.sidebar-landlord-stats {
+  font-size: 10px;
+  color: var(--text-dim);
+  padding-left: 14px;
+  margin-top: 1px;
+}
+
 .sidebar-terminal-kill {
   background: none;
   border: none;

@@ -97,6 +97,25 @@ impl AgentManager {
         Ok(id)
     }
 
+    /// Re-register all running agents with the broker after reconnect.
+    pub async fn re_register_all(&self, broker_tx: &Arc<Mutex<BrokerSender>>) {
+        if self.agents.is_empty() { return; }
+        println!("Re-registering {} running agent(s)...", self.agents.len());
+        for (id, agent) in &self.agents {
+            let msg = serde_json::json!({
+                "type": "register",
+                "id": id,
+                "name": format!("agent-{}", id),
+                "pid": agent.pid,
+                "bridge_id": self.bridge_id,
+                "harness": "claude-code",
+                "hostname": hostname::get().map(|h| h.to_string_lossy().to_string()).unwrap_or_default(),
+            });
+            let mut tx = broker_tx.lock().await;
+            tx.send(&msg).await;
+        }
+    }
+
     pub async fn kill_agent(
         &mut self,
         id: &str,

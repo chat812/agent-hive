@@ -42,6 +42,9 @@ Let your AI coding instances find each other, coordinate, and work as a team. Cl
 - **Approval-based auth** — new peers held pending until dashboard approval; local peers auto-approved
 - **Idle/stall detection** — MCP server detects unresponsive agents and alerts Master
 - **Token tracking** — client-side byte estimation reported via heartbeat
+- **Landlord metrics** — CPU, RAM, and disk usage reported every 5s per landlord
+- **Master Mind** — Rust MCP server for Claude to control the network, auto-hires workers on the best available landlord
+- **Drag-and-drop terminals** — reorder terminal panels by dragging
 
 ---
 
@@ -58,7 +61,7 @@ On first start, a master key is generated and saved to `~/.agent-hive.key`. The 
 
 ### 2. Register the MCP server
 
-The landlord auto-detects the coworker binary and auto-configures the MCP server globally in `~/.claude.json`. No manual setup is needed — just build the binary and start the landlord (step 5).
+The landlord auto-detects the coworker binary and auto-configures the MCP server globally in `~/.freecc.json`. No manual setup is needed — just build the binary and start the landlord (step 5).
 
 To register manually:
 
@@ -127,6 +130,29 @@ export AGENT_HIVE_TOKEN=<master-key>
 
 Once connected, click **Hire Worker** in the dashboard header to spawn an agent. Select a landlord, enter a command (e.g. `claude`, `cmd.exe`, `bash`), and a live terminal panel appears below the messages section.
 
+### 7. Start Master Mind (optional — for AI-controlled network management)
+
+Master Mind is a Rust MCP server that Claude connects to as a tool. It can monitor the network, hire workers on the best available landlord, and receive progress reports.
+
+```bash
+cd master-mind && cargo build --release
+```
+
+Add to `~/.freecc.json`:
+```json
+{
+  "mcpServers": {
+    "master-mind": {
+      "command": "/path/to/master-mind"
+    }
+  }
+}
+```
+
+**Exposed tools:** `network_status`, `hire_worker`, `send_message`, `broadcast_message`, `check_messages`, `list_channels`, `create_channel`, `get_agent_progress`, `kill_agent`, `list_memory`, `get_memory`, `set_memory`
+
+The `hire_worker` tool automatically selects the landlord with the lowest CPU usage and highest free RAM.
+
 ---
 
 ## Roles
@@ -183,6 +209,20 @@ User
 | `report_issue` | Auto-forwards concern to Master (for headless agents) |
 | `force_stop` / `resume_work` | Master-only abort/resume signals |
 
+### Master Mind tools
+
+| Tool | Description |
+|------|-------------|
+| `network_status` | Full network overview — landlords with resources, agents with roles, channels |
+| `hire_worker` | Spawn an agent on the best available landlord (auto-selected by CPU/RAM) |
+| `send_message` | Send to a specific agent |
+| `broadcast_message` | Send to all agents in current channel |
+| `check_messages` | Receive progress reports from agents |
+| `list_channels` / `create_channel` | Channel management |
+| `get_agent_progress` | Read agent status from shared memory |
+| `kill_agent` | Kill an agent by ID |
+| `list_memory` / `get_memory` / `set_memory` | Shared channel memory |
+
 ---
 
 ## Transport
@@ -213,6 +253,7 @@ Dashboard ──WS──► Broker ──WS──► Landlord ──PTY──►
 - **Resize**: `ResizeObserver` → dashboard WS → broker → landlord WS → PTY resize
 - Landlord agents are auto-approved and kept alive by broker ping (every 5s)
 - Each landlord also runs a local HTTP gateway on port 17900 for coworker MCP servers
+- Landlords report system metrics (CPU, RAM, disk) every 5s to the broker
 
 ---
 
@@ -231,9 +272,16 @@ Dashboard ──WS──► Broker ──WS──► Landlord ──PTY──►
                            │                  │
               MCP server (stdio)     Landlord (Rust binary)
               Rust or TypeScript     Spawns PTYs, streams I/O
-              Machine A              Machine B
+              Reports metrics/5s     Auto-configures MCP
                     │                       │
               Claude Code              Codex / OpenCode
+
+     ┌──────────────────────────┐
+     │  Master Mind (Rust MCP)  │
+     │  Controls the network    │
+     │  Hires workers, monitors │
+     │  AI-driven orchestration │
+     └──────────────────────────┘
 ```
 
 **Key files:**
@@ -243,7 +291,8 @@ Dashboard ──WS──► Broker ──WS──► Landlord ──PTY──►
 | `broker.ts` | HTTP + WebSocket server, SQLite, auth, dashboard, landlord routing, UI auto-build |
 | `server.ts` | TypeScript MCP stdio server (one per coding session) |
 | `coworker/src/main.rs` | Rust MCP stdio server — same features, ~3 MB binary |
-| `bridge/` | Rust landlord binary — PTY spawn, terminal I/O, local HTTP gateway |
+| `bridge/` | Rust landlord binary — PTY spawn, terminal I/O, system metrics, local HTTP gateway |
+| `master-mind/` | Rust MCP server — AI-controlled network management, auto-hires workers |
 | `shared/types.ts` | Shared types for broker API and WebSocket events |
 | `shared/auth.ts` | Master key management, token generation |
 | `shared/summarize.ts` | Auto-summary generation via OpenAI |
@@ -261,7 +310,7 @@ The dashboard (served at `http://<broker>:7899`) provides:
 - **Peer grid** — connected instances with pixel avatars, role badges, activity bubbles
 - **Peer cards** — set roles, move to channels, view token usage
 - **Channel sidebar** — create/remove channels, click peers to configure
-- **Landlords panel** — view connected landlords, approve/reject pending landlords
+- **Landlords panel** — view connected landlords with CPU/RAM/disk stats, approve/reject pending landlords
 - **Message log** — paginated (200/page), real-time via WebSocket
 - **Live terminals** — xterm.js panels below the messages section, with full PTY I/O
 - **Hire Worker** — spawn dialog to launch agents on connected landlords

@@ -143,6 +143,9 @@ export interface LandlordInfo {
   agents: number;
   hostname: string;
   status: "pending" | "approved" | "rejected";
+  disk_free?: number; // bytes
+  ram_free?: number;  // bytes
+  cpu_pct?: number;   // 0-100
 }
 
 // --- WebSocket event types (broker → dashboard) ---

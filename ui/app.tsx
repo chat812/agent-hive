@@ -582,6 +582,14 @@ function peerColor(name: string): string {
   return PEER_COLORS[h % PEER_COLORS.length];
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes <= 0) return "0B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const val = bytes / Math.pow(1024, i);
+  return `${val.toFixed(i === 0 ? 0 : 1)}${units[i]}`;
+}
+
 function RoleEmoji({ role }: { role?: string }) {
   const icon = getRoleIcon(role ?? "");
   if (!icon) return null;
@@ -1554,10 +1562,17 @@ function Dashboard({ masterToken }: { masterToken: string }) {
           ) : (
             <div className="sidebar-terminals">
               {landlords.map((l) => (
-                <div key={l.id} className="sidebar-terminal-item">
-                  <span className="sidebar-terminal-dot" />
-                  <span className="sidebar-terminal-name" title={l.id}>{l.hostname || l.id}</span>
-                  <span className="sidebar-terminal-agents">{l.agents}</span>
+                <div key={l.id} className="sidebar-terminal-item" style={{ flexDirection: "column", alignItems: "flex-start" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, width: "100%" }}>
+                    <span className="sidebar-terminal-dot" />
+                    <span className="sidebar-terminal-name" title={l.id}>{l.hostname || l.id}</span>
+                    <span className="sidebar-terminal-agents">{l.agents}</span>
+                  </div>
+                  {l.cpu_pct != null && (
+                    <div className="sidebar-landlord-stats">
+                      CPU {l.cpu_pct.toFixed(0)}% · {(l.ram_free ?? 0 / (1 << 30)).toFixed ? formatBytes(l.ram_free ?? 0) : "—"} free · {formatBytes(l.disk_free ?? 0)} free
+                    </div>
+                  )}
                 </div>
               ))}
               {pendingLandlords.map((l) => (

@@ -2,6 +2,7 @@ mod client;
 mod gateway;
 mod manager;
 mod spawn;
+mod stats;
 
 use anyhow::Result;
 use clap::Parser;
@@ -219,8 +220,11 @@ async fn main() -> Result<()> {
                 let broker_tx = Arc::new(Mutex::new(client::BrokerSender::new(ws_sink)));
                 let broker_rx = Arc::new(Mutex::new(ws_stream));
 
-                // Update gateway broker sender
-                // (gateway was started with a placeholder, but broker_tx is the real one)
+                // Re-register running agents after reconnect
+                {
+                    let m = mgr.lock().await;
+                    m.re_register_all(&broker_tx).await;
+                }
 
                 // Start broker message reader
                 let mgr_clone = mgr.clone();
@@ -241,6 +245,18 @@ async fn main() -> Result<()> {
                 tokio::spawn(async move {
                     client::read_broker_messages(broker_rx, mgr_clone, broker_tx_reader, &bridge_id_clone).await;
                     reader_done.store(true, std::sync::atomic::Ordering::Relaxed);
+                });
+
+                // System stats reporter (every 5s)
+                let stats_tx = broker_tx.clone();
+                tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+                    loop {
+                        interval.tick().await;
+                        let stats = stats::collect();
+                        let mut tx = stats_tx.lock().await;
+                        tx.send(&stats).await;
+                    }
                 });
 
                 // Interactive command loop (stdin commands + wait for broker disconnect)
