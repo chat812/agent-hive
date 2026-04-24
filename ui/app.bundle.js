@@ -32559,41 +32559,25 @@ function HireWorkerDialog({ landlords, onHire, onClose }) {
   }, undefined, false, undefined, this);
 }
 function BudgetBar({ budget, onEdit }) {
-  const pct = budget.total_budget > 0 ? Math.min(100, budget.running_cost / budget.total_budget * 100) : 0;
-  const overBudget = budget.running_cost > budget.total_budget;
   return /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
-    className: `budget-bar ${overBudget ? "over-budget" : ""}`,
+    className: "budget-bar",
     onClick: onEdit,
-    title: "Click to edit budget",
-    children: [
-      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
-        className: "budget-bar-fill",
-        style: { width: `${pct}%` }
-      }, undefined, false, undefined, this),
-      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
-        className: "budget-bar-label",
-        children: [
-          budget.running_cost,
-          "/",
-          budget.total_budget,
-          " credits"
-        ]
-      }, undefined, true, undefined, this)
-    ]
-  }, undefined, true, undefined, this);
+    title: "Click to view role prices",
+    children: /* @__PURE__ */ jsx_dev_runtime.jsxDEV("span", {
+      className: "budget-bar-label",
+      children: [
+        budget.running_cost,
+        " credits"
+      ]
+    }, undefined, true, undefined, this)
+  }, undefined, false, undefined, this);
 }
 function BudgetSettingsDialog({ budget, masterToken, onClose }) {
-  const [totalBudget, setTotalBudget] = import_react.useState(budget.total_budget);
   const [prices, setPrices] = import_react.useState({ ...budget.role_prices });
   const [saving, setSaving] = import_react.useState(false);
   const handleSave = async () => {
     setSaving(true);
     try {
-      await fetch("/budget/set", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
-        body: JSON.stringify({ total_budget: totalBudget })
-      });
       await fetch("/budget/set-prices", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` },
@@ -32615,26 +32599,14 @@ function BudgetSettingsDialog({ budget, masterToken, onClose }) {
       children: [
         /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
           className: "spawn-title",
-          children: "Budget Settings"
+          children: "Role Prices"
         }, undefined, false, undefined, this),
-        /* @__PURE__ */ jsx_dev_runtime.jsxDEV("label", {
-          className: "budget-field",
-          children: [
-            "Total Budget (credits)",
-            /* @__PURE__ */ jsx_dev_runtime.jsxDEV("input", {
-              type: "number",
-              min: 0,
-              value: totalBudget,
-              onChange: (e) => setTotalBudget(Number(e.target.value))
-            }, undefined, false, undefined, this)
-          ]
-        }, undefined, true, undefined, this),
         /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
           className: "budget-prices",
           children: [
             /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
               className: "budget-prices-header",
-              children: "Role Prices"
+              children: "Cost per agent"
             }, undefined, false, undefined, this),
             Object.entries(prices).sort(([a], [b3]) => a.localeCompare(b3)).map(([label, price]) => /* @__PURE__ */ jsx_dev_runtime.jsxDEV("label", {
               className: "budget-field budget-price-row",
@@ -32660,8 +32632,6 @@ function BudgetSettingsDialog({ budget, masterToken, onClose }) {
               /* @__PURE__ */ jsx_dev_runtime.jsxDEV("strong", {
                 children: budget.running_cost
               }, undefined, false, undefined, this),
-              " / ",
-              budget.total_budget,
               " credits"
             ]
           }, undefined, true, undefined, this)

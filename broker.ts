@@ -1300,16 +1300,6 @@ Bun.serve({
       }
       const body = await req.json() as { bridge_id: string; cmd: string; args?: string[] };
       if (!body.bridge_id || !body.cmd) return Response.json({ error: "bridge_id and cmd required" }, { status: 400 });
-      // Budget gate: new agents cost Worker price (1 credit) until role assigned
-      const currentCost = getRunningCost();
-      const budgetRow = db.query("SELECT total_budget FROM budget WHERE id = 1").get() as { total_budget: number };
-      const defaultPrice = rolePrices.get("Worker") ?? 1;
-      if (currentCost + defaultPrice > budgetRow.total_budget) {
-        return Response.json({
-          ok: false,
-          error: `Budget exceeded: ${currentCost}/${budgetRow.total_budget} credits used. New agent costs ${defaultPrice} credits. Free up agents or increase budget.`,
-        }, { status: 402 });
-      }
       const ws = wsLandlords.get(body.bridge_id);
       if (!ws) return Response.json({ error: "Landlord not connected" }, { status: 404 });
       ws.send(JSON.stringify({ type: "spawn_agent", cmd: body.cmd, args: body.args || [] }));

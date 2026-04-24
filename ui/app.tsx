@@ -1167,33 +1167,22 @@ function HireWorkerDialog({ landlords, onHire, onClose }: {
 // --- Budget Bar ---
 
 function BudgetBar({ budget, onEdit }: { budget: BudgetInfo; onEdit: () => void }) {
-  const pct = budget.total_budget > 0
-    ? Math.min(100, (budget.running_cost / budget.total_budget) * 100)
-    : 0;
-  const overBudget = budget.running_cost > budget.total_budget;
   return (
-    <div className={`budget-bar ${overBudget ? "over-budget" : ""}`} onClick={onEdit} title="Click to edit budget">
-      <div className="budget-bar-fill" style={{ width: `${pct}%` }} />
+    <div className="budget-bar" onClick={onEdit} title="Click to view role prices">
       <span className="budget-bar-label">
-        {budget.running_cost}/{budget.total_budget} credits
+        {budget.running_cost} credits
       </span>
     </div>
   );
 }
 
 function BudgetSettingsDialog({ budget, masterToken, onClose }: { budget: BudgetInfo; masterToken: string; onClose: () => void }) {
-  const [totalBudget, setTotalBudget] = useState(budget.total_budget);
   const [prices, setPrices] = useState<Record<string, number>>({ ...budget.role_prices });
   const [saving, setSaving] = useState(false);
 
   const handleSave = async () => {
     setSaving(true);
     try {
-      await fetch("/budget/set", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${masterToken}` },
-        body: JSON.stringify({ total_budget: totalBudget }),
-      });
       await fetch("/budget/set-prices", {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${masterToken}` },
@@ -1208,13 +1197,9 @@ function BudgetSettingsDialog({ budget, masterToken, onClose }: { budget: Budget
   return createPortal(
     <div className="dialog-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="dialog-content budget-settings">
-        <div className="spawn-title">Budget Settings</div>
-        <label className="budget-field">
-          Total Budget (credits)
-          <input type="number" min={0} value={totalBudget} onChange={(e) => setTotalBudget(Number(e.target.value))} />
-        </label>
+        <div className="spawn-title">Role Prices</div>
         <div className="budget-prices">
-          <div className="budget-prices-header">Role Prices</div>
+          <div className="budget-prices-header">Cost per agent</div>
           {Object.entries(prices).sort(([a], [b]) => a.localeCompare(b)).map(([label, price]) => (
             <label key={label} className="budget-field budget-price-row">
               <span>{label}</span>
@@ -1223,7 +1208,7 @@ function BudgetSettingsDialog({ budget, masterToken, onClose }: { budget: Budget
           ))}
         </div>
         <div className="budget-active">
-          <span>Running cost: <strong>{budget.running_cost}</strong> / {budget.total_budget} credits</span>
+          <span>Running cost: <strong>{budget.running_cost}</strong> credits</span>
         </div>
         <div className="dialog-actions">
           <button className="btn" onClick={onClose}>Cancel</button>

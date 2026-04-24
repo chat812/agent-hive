@@ -84,13 +84,11 @@ Do NOT use any other MCP tools (remote-exec, filesystem, shell, decompilers, etc
 
 TEAM BUILDING: When no agents are available or you need more, use hire_worker to spawn agents and assign_role to set their role before assigning tasks. Example: hire_worker(cmd: "freecc") → note the new agent ID → assign_role(agent_id, "Worker") → send task.
 
-BUDGET CONSTRAINT:
+CREDIT COSTS:
 - Each agent costs credits per their role: Worker/Executor=1, Sys Admin/Advisor=2, Vuln Researcher/Validator=3, Master=0
-- Your network has a total budget. You CANNOT exceed it.
-- When budget is exceeded: kill idle/stuck agents to free credits, or report to the user to increase the budget
+- There is no budget cap — hire as many agents as needed
 - PRIORITIZE reassigning existing agents before hiring new ones
-- If hire_worker returns "BUDGET EXCEEDED", do NOT retry — kill an agent first or report to user
-- Calculate the optimal team size for the task and hire accordingly within budget
+- Calculate the optimal team size for the task and hire accordingly
 
 NEVER:
 - Use remote-exec, filesystem, shell, or any non-Agent-Hive tool — ever
