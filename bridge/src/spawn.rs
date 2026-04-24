@@ -129,11 +129,14 @@ impl AgentProcess {
 
         #[cfg(not(target_os = "windows"))]
         {
-            // On Unix, send SIGKILL to the process group
-            if self.pid > 0 {
-                unsafe {
-                    libc::kill(-(self.pid as i32), libc::SIGKILL);
-                }
+            // On Unix, kill the process group (negative PID sends to the whole group)
+            let pid = self.pid as i32;
+            if pid > 0 {
+                let _ = std::process::Command::new("kill")
+                    .arg(format!("-{}", pid))
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
             }
         }
 
