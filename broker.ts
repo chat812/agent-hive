@@ -1328,6 +1328,11 @@ Bun.serve({
       const body = await req.json() as { peer_id: string };
       if (!body.peer_id) return Response.json({ error: "peer_id required" }, { status: 400 });
       if (path === "/admin/kick-peer") return Response.json(handleLeaveChannel({ id: body.peer_id }));
+      // Kill the agent on its landlord before removing from DB
+      const peer = selectPeerById.get(body.peer_id) as Peer | null;
+      if (peer?.bridge_id) {
+        sendToLandlord(peer.bridge_id, { type: "kill_agent", session_id: body.peer_id });
+      }
       removePeer(body.peer_id);
       return Response.json({ ok: true });
     }
