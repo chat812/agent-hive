@@ -305,6 +305,7 @@ const landlordLastActivity = new Map<string, number>(); // landlordId → last m
 const LANDLORD_IDLE_TIMEOUT_MS = 30_000; // 30s — consider dead if no activity
 const landlordStats = new Map<string, { disk_free: number; ram_free: number; cpu_pct: number; ts: number }>();
 const landlordStatsBroadcast = new Map<string, number>(); // landlordId → last broadcast timestamp
+const landlordAgentIds = new Map<string, Set<string>>(); // landlordId → set of live agent IDs from landlord
 
 // --- Budget helpers ---
 
@@ -430,6 +431,7 @@ setInterval(() => {
       wsLandlords.delete(bridgeId);
       landlordCwds.delete(bridgeId);
       landlordLastActivity.delete(bridgeId);
+      landlordAgentIds.delete(bridgeId);
       // Remove all agents belonging to this landlord
       const landlordAgents = (selectAllPeersAny.all() as Peer[]).filter(p => p.bridge_id === bridgeId);
       for (const agent of landlordAgents) {
@@ -446,6 +448,7 @@ setInterval(() => {
       wsLandlords.delete(bridgeId);
       landlordCwds.delete(bridgeId);
       landlordLastActivity.delete(bridgeId);
+      landlordAgentIds.delete(bridgeId);
       broadcast({ type: "landlord_update", landlords: getLandlordList() });
     }
   }
@@ -477,16 +480,18 @@ function cleanStalePeers() {
 
 // --- Zombie detection ---
 // Zombies are agents whose bridge_id points to a disconnected landlord,
-// or agents that have been offline beyond the stale threshold with no landlord.
+// OR agents whose landlord is connected but reports the agent is not running.
 
 function getZombieAgents(): Peer[] {
   const allPeers = selectAllPeersAny.all() as Peer[];
   return allPeers.filter(p => {
     if (p.status === "offline" || p.status === "pending") return false;
-    // Agent has a bridge_id but the landlord is disconnected
-    if (p.bridge_id && p.bridge_id !== "" && !wsLandlords.has(p.bridge_id)) {
-      return true;
-    }
+    if (!p.bridge_id || p.bridge_id === "") return false;
+    // Landlord disconnected → zombie
+    if (!wsLandlords.has(p.bridge_id)) return true;
+    // Landlord connected but doesn't report this agent → zombie
+    const liveIds = landlordAgentIds.get(p.bridge_id);
+    if (liveIds && liveIds.size > 0 && !liveIds.has(p.id)) return true;
     return false;
   });
 }
@@ -1879,6 +1884,10 @@ case "/set-role": {
           if (payload.type === "system_stats") {
             const st = { disk_free: payload.disk_free ?? 0, ram_free: payload.ram_free ?? 0, cpu_pct: payload.cpu_pct ?? 0, ts: Date.now() };
             landlordStats.set(bridgeId, st);
+            // Track live agent IDs from landlord for zombie detection
+            if (Array.isArray(payload.agent_ids)) {
+              landlordAgentIds.set(bridgeId, new Set(payload.agent_ids as string[]));
+            }
             // Broadcast throttled: at most once per 15s per landlord
             const lastBroadcast = landlordStatsBroadcast.get(bridgeId) ?? 0;
             if (Date.now() - lastBroadcast > 15000) {
@@ -1910,6 +1919,7 @@ case "/set-role": {
           landlordLastActivity.delete(bridgeId);
           landlordStats.delete(bridgeId);
           landlordStatsBroadcast.delete(bridgeId);
+          landlordAgentIds.delete(bridgeId);
           console.error(`[broker] Landlord WS disconnected: ${bridgeId}`);
           // Mark agents offline (don't remove — landlord may reconnect and reclaim them)
           const landlordAgents = (selectAllPeersAny.all() as Peer[]).filter(p => p.bridge_id === bridgeId && p.status === "approved");

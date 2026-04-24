@@ -281,11 +281,13 @@ async fn main() -> Result<()> {
 
                 // System stats reporter (every 5s)
                 let stats_tx = broker_tx.clone();
+                let stats_mgr = mgr.clone();
                 tokio::spawn(async move {
                     let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
                     loop {
                         interval.tick().await;
-                        let stats = stats::collect();
+                        let agent_ids: Vec<String> = stats_mgr.lock().await.agents.keys().cloned().collect();
+                        let stats = stats::collect_with_agents(&agent_ids);
                         let mut tx = stats_tx.lock().await;
                         tx.send(&stats).await;
                     }
