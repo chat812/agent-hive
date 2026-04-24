@@ -1390,7 +1390,7 @@ Bun.serve({
     }
 
     // Role management — master key only
-    if (path === "/add-channel-role" || path === "/remove-channel-role" || path === "/set-peer-role") {
+    if (path === "/add-channel-role" || path === "/remove-channel-role" || path === "/set-peer-role" || path === "/set-peer-channel") {
       if (!isMasterKey(authHeader)) {
         return Response.json({ error: "Master key required" }, { status: 403 });
       }
@@ -1427,6 +1427,27 @@ Bun.serve({
         broadcast({ type: "peer_updated", peer: updated });
         if (role) pushToAgent(peer_id, { type: "role_changed", role, channel: peer.channel });
         broadcastBudgetUpdate();
+        return Response.json({ ok: true });
+      }
+
+      if (path === "/set-peer-channel") {
+        const { peer_id, channel } = body;
+        if (!peer_id || !channel) return Response.json({ error: "peer_id and channel required" }, { status: 400 });
+        const peer = selectPeerById.get(peer_id) as Peer | null;
+        if (!peer) return Response.json({ error: "Peer not found" }, { status: 404 });
+        const name = sanitizeChannelName(channel);
+        if (name !== "main" && !selectChannelByName.get(name)) {
+          return Response.json({ error: `Channel #${name} does not exist` }, { status: 400 });
+        }
+        if (peer.channel === name) return Response.json({ ok: true });
+        const oldChannel = peer.channel;
+        updatePeerChannel.run(name, peer_id);
+        const { role } = pushChannelRole(peer_id, name);
+        const updated = selectPeerById.get(peer_id) as Peer;
+        upsertLastChannel.run(updated.hostname, updated.cwd, name);
+        broadcast({ type: "peer_updated", peer: updated });
+        pushToAgent(peer_id, { type: "channel_changed", channel: name, old_channel: oldChannel });
+        if (role) pushToAgent(peer_id, { type: "role_changed", role, channel: name });
         return Response.json({ ok: true });
       }
     }

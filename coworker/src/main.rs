@@ -484,6 +484,17 @@ struct AssignRoleParams {
     role: String,
 }
 
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct SetChannelParams {
+    #[schemars(description = "The peer ID to move to another channel")]
+    #[serde(alias = "peer_id", alias = "id")]
+    agent_id: String,
+    #[schemars(description = "Target channel name (e.g. 'main', 'task-1', etc.)")]
+    channel: String,
+}
+
+
 #[derive(Debug, Deserialize)]
 struct ChannelPeerSummary {
     id: String,
@@ -1437,6 +1448,25 @@ impl CoworkerServer {
             Err(e) => format!("Error assigning role: {}", e),
         }
     }
+
+
+    #[tool(
+        name = "set_channel",
+        description = "Move an agent to a different channel by peer ID. The agent will join to new channel and receive messages from there. Requires master key."
+    )]
+    async fn set_channel(
+        &self,
+        Parameters(SetChannelParams { agent_id, channel }): Parameters<SetChannelParams>,
+    ) -> String {
+        self.touch_activity();
+        match self.broker.admin_post::<serde_json::Value>("/set-peer-channel", &serde_json::json!({
+            "peer_id": agent_id, "channel": channel
+        })).await {
+            Ok(_) => format!("{} moved to channel #{}", agent_id, channel),
+            Err(e) => format!("Error moving to channel: {}", e),
+        }
+    }
+
 }
 
 #[tool_handler]
@@ -1691,6 +1721,20 @@ impl ServerHandler for CoworkerServer {
                                                     );
                                                     let _ = peer_ws.send_notification(ServerNotification::CustomNotification(notification)).await;
                                                     flog!("Abort via WS");
+                                                }
+                                                "channel_changed" => {
+                                                    let channel = event.get("channel").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                                    let old_channel = event.get("old_channel").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                                    let mut s = state_ws.lock().await;
+                                                    s.channel = channel.clone();
+                                                    drop(s);
+                                                    let content = format!("🔄 You have been moved from #{} to #{}. All messages in this channel will come from #{} now.", old_channel, channel, channel);
+                                                    let notification = CustomNotification::new(
+                                                        "notifications/claude/channel",
+                                                        Some(serde_json::json!({ "content": content, "meta": { "from_id": "agent-hive", "from_summary": "channel change", "from_cwd": "", "from_harness": "agent-hive", "sent_at": now_iso() } })),
+                                                    );
+                                                    let _ = peer_ws.send_notification(ServerNotification::CustomNotification(notification)).await;
+                                                    flog!("Channel changed via WS: {} -> {}", old_channel, channel);
                                                 }
                                                 "abort_cleared" => {
                                                     let notification = CustomNotification::new(
