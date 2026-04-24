@@ -475,6 +475,38 @@ function cleanStalePeers() {
   }
 }
 
+// --- Zombie detection ---
+// Zombies are agents whose bridge_id points to a disconnected landlord,
+// or agents that have been offline beyond the stale threshold with no landlord.
+
+function getZombieAgents(): Peer[] {
+  const allPeers = selectAllPeersAny.all() as Peer[];
+  return allPeers.filter(p => {
+    if (p.status === "offline" || p.status === "pending") return false;
+    // Agent has a bridge_id but the landlord is disconnected
+    if (p.bridge_id && p.bridge_id !== "" && !wsLandlords.has(p.bridge_id)) {
+      return true;
+    }
+    return false;
+  });
+}
+
+function cleanupZombies(): { removed: string[] } {
+  const zombies = getZombieAgents();
+  const removed: string[] = [];
+  for (const z of zombies) {
+    terminalBuffers.delete(z.id);
+    removePeer(z.id);
+    broadcast({ type: "agent_exited", session_id: z.id });
+    removed.push(z.id);
+  }
+  if (removed.length > 0) {
+    broadcastBudgetUpdate();
+    broadcast({ type: "landlord_update", landlords: getLandlordList() });
+  }
+  return { removed };
+}
+
 function removePeer(id: string) {
   db.run("DELETE FROM tokens WHERE peer_id = ?", [id]);
   db.run("DELETE FROM messages WHERE to_id = ? AND delivered = 0", [id]);
@@ -546,7 +578,9 @@ const deleteLandlord = db.prepare("DELETE FROM landlords WHERE id = ?");
 
 // Run initial cleanup now that all prepared statements are defined
 cleanStalePeers();
+cleanupZombies();
 setInterval(cleanStalePeers, 30_000);
+setInterval(() => { const r = cleanupZombies(); if (r.removed.length > 0) console.error(`[broker] Auto-cleaned ${r.removed.length} zombie agent(s)`); }, 30_000);
 
 // --- Generate peer ID ---
 
@@ -1339,6 +1373,24 @@ Bun.serve({
         }
       }
       return Response.json({ ok: true, landlords: count });
+    }
+
+    // Zombie cleanup: remove agents whose landlord is disconnected
+    if (path === "/admin/cleanup-zombies") {
+      if (!isMasterKey(authHeader)) {
+        return Response.json({ error: "Master key required" }, { status: 403 });
+      }
+      const result = cleanupZombies();
+      return Response.json(result);
+    }
+
+    // List zombie agents (dry-run)
+    if (path === "/admin/zombies") {
+      if (!isMasterKey(authHeader)) {
+        return Response.json({ error: "Master key required" }, { status: 403 });
+      }
+      const zombies = getZombieAgents();
+      return Response.json({ zombies: zombies.map(z => ({ id: z.id, name: z.name, bridge_id: z.bridge_id, channel: z.channel })) });
     }
 
     // --- Budget endpoints ---

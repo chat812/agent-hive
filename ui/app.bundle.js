@@ -33280,6 +33280,22 @@ function Dashboard({ masterToken }) {
                         children: "Resync"
                       }, undefined, false, undefined, this),
                       /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
+                        className: "btn",
+                        onClick: async () => {
+                          const res = await fetch("/admin/cleanup-zombies", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json", Authorization: `Bearer ${masterToken}` }
+                          });
+                          const data = await res.json();
+                          if (data.removed?.length > 0)
+                            alert(`Cleaned ${data.removed.length} zombie agent(s)`);
+                          else
+                            alert("No zombies found");
+                        },
+                        title: "Remove agents whose landlord is disconnected",
+                        children: "Clean Zombies"
+                      }, undefined, false, undefined, this),
+                      /* @__PURE__ */ jsx_dev_runtime.jsxDEV("button", {
                         className: "btn btn-spawn",
                         onClick: () => setShowSpawnDialog(true),
                         title: "Hire a worker on a landlord",
