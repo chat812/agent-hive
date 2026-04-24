@@ -466,6 +466,8 @@ struct HireWorkerParams {
     cmd: String,
     #[schemars(description = "Arguments for the command")]
     args: Option<Vec<String>>,
+    #[schemars(description = "Specific landlord ID to spawn on. If omitted, auto-selects the best landlord by CPU/RAM.")]
+    landlord_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1309,11 +1311,11 @@ impl CoworkerServer {
 
     #[tool(
         name = "hire_worker",
-        description = "Hire a new worker agent on the best available landlord. Automatically selects the landlord with the lowest CPU and highest free RAM. Requires master key."
+        description = "Hire a new worker agent on the best available landlord. Automatically selects the landlord with the lowest CPU and highest free RAM. Optionally specify landlord_id to target a specific landlord (e.g. a Linux host for Sys Admin). Requires master key."
     )]
     async fn hire_worker(
         &self,
-        Parameters(HireWorkerParams { cmd, args }): Parameters<HireWorkerParams>,
+        Parameters(HireWorkerParams { cmd, args, landlord_id }): Parameters<HireWorkerParams>,
     ) -> String {
         self.touch_activity();
 
@@ -1364,8 +1366,22 @@ impl CoworkerServer {
             None => return "No suitable landlord found".to_string(),
         };
 
-        let bridge_id = landlord.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        let hostname = landlord.get("hostname").and_then(|v| v.as_str()).unwrap_or("unknown");
+        // If a specific landlord was requested, use that instead
+        let (bridge_id, hostname) = if let Some(ref lid) = landlord_id {
+            let target = landlords.iter().find(|l| l.get("id").and_then(|v| v.as_str()) == Some(lid.as_str()));
+            match target {
+                Some(l) => (
+                    lid.clone(),
+                    l.get("hostname").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
+                ),
+                None => return format!("Landlord {} not found or not connected", lid),
+            }
+        } else {
+            (
+                landlord.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                landlord.get("hostname").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
+            )
+        };
 
         let body = serde_json::json!({
             "bridge_id": bridge_id,
