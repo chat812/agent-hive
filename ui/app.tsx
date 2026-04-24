@@ -381,8 +381,8 @@ function RolePopup({ peer, masterToken, onClose, channels }: {
   const otherChannels = (channels ?? []).filter((c) => c.name !== peer.channel);
 
   return createPortal(
-    <div className="role-popup-overlay" onClick={onClose}>
-      <div className="role-popup" onClick={(e) => e.stopPropagation()}>
+    <div className="role-popup-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="role-popup">
         <div className="role-popup-header">
           <div className="role-popup-name">{peer.name || peer.id}</div>
           <div className="role-popup-meta">{peer.harness} · {peer.hostname} · #{peer.channel}</div>
@@ -487,8 +487,8 @@ function MemoryValuePopup({ entry, masterToken, channel, onClose, onDelete }: {
   }, []);
 
   return createPortal(
-    <div className="role-popup-overlay" onClick={onClose}>
-      <div className="role-popup" onClick={(e) => e.stopPropagation()}>
+    <div className="role-popup-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="role-popup">
         <div className="role-popup-header">
           <div className="role-popup-name">{entry.key}</div>
           <div className="role-popup-meta">
@@ -1206,8 +1206,8 @@ function BudgetSettingsDialog({ budget, masterToken, onClose }: { budget: Budget
   };
 
   return createPortal(
-    <div className="dialog-overlay" onClick={onClose}>
-      <div className="dialog-content budget-settings" onClick={(e) => e.stopPropagation()}>
+    <div className="dialog-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="dialog-content budget-settings">
         <div className="spawn-title">Budget Settings</div>
         <label className="budget-field">
           Total Budget (credits)

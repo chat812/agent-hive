@@ -31621,10 +31621,12 @@ function RolePopup({ peer, masterToken, onClose, channels }) {
   const otherChannels = (channels ?? []).filter((c) => c.name !== peer.channel);
   return import_react_dom.createPortal(/* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
     className: "role-popup-overlay",
-    onClick: onClose,
+    onMouseDown: (e) => {
+      if (e.target === e.currentTarget)
+        onClose();
+    },
     children: /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
       className: "role-popup",
-      onClick: (e) => e.stopPropagation(),
       children: [
         /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
           className: "role-popup-header",
@@ -31761,10 +31763,12 @@ function MemoryValuePopup({ entry, masterToken, channel, onClose, onDelete }) {
   }, []);
   return import_react_dom.createPortal(/* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
     className: "role-popup-overlay",
-    onClick: onClose,
+    onMouseDown: (e) => {
+      if (e.target === e.currentTarget)
+        onClose();
+    },
     children: /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
       className: "role-popup",
-      onClick: (e) => e.stopPropagation(),
       children: [
         /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
           className: "role-popup-header",
@@ -32602,10 +32606,12 @@ function BudgetSettingsDialog({ budget, masterToken, onClose }) {
   };
   return import_react_dom.createPortal(/* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
     className: "dialog-overlay",
-    onClick: onClose,
+    onMouseDown: (e) => {
+      if (e.target === e.currentTarget)
+        onClose();
+    },
     children: /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
       className: "dialog-content budget-settings",
-      onClick: (e) => e.stopPropagation(),
       children: [
         /* @__PURE__ */ jsx_dev_runtime.jsxDEV("div", {
           className: "spawn-title",
