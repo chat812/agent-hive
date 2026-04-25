@@ -357,6 +357,7 @@ function broadcastBudgetUpdate() {
 // Terminal output buffer — stores all output per session for dashboard reconnect
 const terminalBuffers = new Map<string, string[]>(); // sessionId → hex-encoded chunks
 const TERMINAL_BUFFER_MAX_CHUNKS = 3000; // ~500 KB cap per session (each chunk ~160 bytes hex)
+const terminalLastOutput = new Map<string, number>(); // sessionId → timestamp of last terminal_output from landlord
 
 function pushToAgent(peerId: string, event: object): boolean {
   const ws = wsAgents.get(peerId);
@@ -436,6 +437,7 @@ setInterval(() => {
       const landlordAgents = (selectAllPeersAny.all() as Peer[]).filter(p => p.bridge_id === bridgeId);
       for (const agent of landlordAgents) {
         terminalBuffers.delete(agent.id);
+        terminalLastOutput.delete(agent.id);
         removePeer(agent.id);
         broadcast({ type: "agent_exited", session_id: agent.id });
       }
@@ -501,6 +503,7 @@ function cleanupZombies(): { removed: string[] } {
   const removed: string[] = [];
   for (const z of zombies) {
     terminalBuffers.delete(z.id);
+    terminalLastOutput.delete(z.id);
     removePeer(z.id);
     broadcast({ type: "agent_exited", session_id: z.id });
     removed.push(z.id);
@@ -586,6 +589,47 @@ cleanStalePeers();
 cleanupZombies();
 setInterval(cleanStalePeers, 30_000);
 setInterval(() => { const r = cleanupZombies(); if (r.removed.length > 0) console.error(`[broker] Auto-cleaned ${r.removed.length} zombie agent(s)`); }, 30_000);
+
+// Detect stale terminals — agents that are approved with a bridge_id but haven't
+// received terminal output for 60s. The landlord should be sending output continuously.
+// This catches cases where the PTY reader thread died but the process still appears alive.
+function detectStaleTerminals() {
+  const now = Date.now();
+  const STALE_MS = 60_000; // 60 seconds without output
+  const allPeers = selectAllPeers.all() as Peer[];
+  for (const peer of allPeers) {
+    if (!peer.bridge_id || peer.bridge_id === "") continue;
+    const lastOutput = terminalLastOutput.get(peer.id);
+    // If we've never seen output for this agent, skip (just spawned)
+    if (!lastOutput) continue;
+    if (now - lastOutput > STALE_MS) {
+      console.error(`[broker] Stale terminal: ${peer.id} (${peer.name}) — no output for ${Math.round((now - lastOutput) / 1000)}s`);
+      // Ask the landlord if this agent is still alive
+      const liveIds = landlordAgentIds.get(peer.bridge_id);
+      if (liveIds && !liveIds.has(peer.id)) {
+        // Landlord says agent is not running — clean it up
+        console.error(`[broker] Stale terminal ${peer.id} confirmed dead by landlord — removing`);
+        terminalBuffers.delete(peer.id);
+        terminalLastOutput.delete(peer.id);
+        removePeer(peer.id);
+        broadcast({ type: "agent_exited", session_id: peer.id });
+      } else {
+        // Landlord thinks agent is alive but no output — notify dashboard
+        broadcast({ type: "terminal_stale", session_id: peer.id, stale_seconds: Math.round((now - lastOutput) / 1000) });
+        // If stale for more than 5 minutes, force kill
+        if (now - lastOutput > 300_000) {
+          console.error(`[broker] Stale terminal ${peer.id} exceeded 5 min — force killing`);
+          sendToLandlord(peer.bridge_id, { type: "kill_agent", session_id: peer.id });
+          terminalBuffers.delete(peer.id);
+          terminalLastOutput.delete(peer.id);
+          removePeer(peer.id);
+          broadcast({ type: "agent_exited", session_id: peer.id });
+        }
+      }
+    }
+  }
+}
+setInterval(detectStaleTerminals, 30_000);
 
 // --- Generate peer ID ---
 
@@ -1364,6 +1408,27 @@ Bun.serve({
       return Response.json({ ok: true });
     }
 
+    // Check if an agent's process is still alive on its landlord
+    if (path === "/admin/check-agent") {
+      if (!isMasterKey(authHeader)) {
+        return Response.json({ error: "Master key required" }, { status: 403 });
+      }
+      const body = await req.json() as { peer_id: string };
+      if (!body.peer_id) return Response.json({ error: "peer_id required" }, { status: 400 });
+      const peer = selectPeerById.get(body.peer_id) as Peer | null;
+      if (!peer) return Response.json({ error: "Peer not found" }, { status: 404 });
+      if (!peer.bridge_id) return Response.json({ alive: false, reason: "no_bridge" });
+      const liveIds = landlordAgentIds.get(peer.bridge_id);
+      const alive = liveIds ? liveIds.has(body.peer_id) : false;
+      const lastOutput = terminalLastOutput.get(body.peer_id);
+      return Response.json({
+        alive,
+        bridge_id: peer.bridge_id,
+        landlord_connected: wsLandlords.has(peer.bridge_id),
+        last_output_ago_ms: lastOutput ? Date.now() - lastOutput : null,
+      });
+    }
+
     // Resync: ask a landlord (or all) to re-register running agents
     if (path === "/admin/resync") {
       if (!isMasterKey(authHeader)) {
@@ -1854,6 +1919,7 @@ case "/set-role": {
 
           // Terminal output from bridge → buffer + broadcast to dashboards
           if (payload.type === "terminal_output" && payload.session_id) {
+            terminalLastOutput.set(payload.session_id, Date.now());
             // Buffer for dashboard reconnects
             let buf = terminalBuffers.get(payload.session_id);
             if (!buf) { buf = []; terminalBuffers.set(payload.session_id, buf); }
@@ -1872,6 +1938,7 @@ case "/set-role": {
           // Agent exited (PTY closed)
           if (payload.type === "agent_exited" && payload.session_id) {
             terminalBuffers.delete(payload.session_id);
+            terminalLastOutput.delete(payload.session_id);
             removePeer(payload.session_id);
             broadcast({ type: "agent_exited", session_id: payload.session_id });
             console.error(`[broker] Landlord agent exited: ${payload.session_id}`);
@@ -1913,6 +1980,7 @@ case "/set-role": {
         const peer = selectPeerById.get(peerId) as Peer | null;
         if (peer?.bridge_id) {
           terminalBuffers.delete(peerId);
+          terminalLastOutput.delete(peerId);
           broadcast({ type: "agent_exited", session_id: peerId });
         }
         console.error(`[broker] Agent WS disconnected: ${peerId} (${name})`);
