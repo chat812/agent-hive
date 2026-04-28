@@ -19,14 +19,14 @@ Let your AI coding instances find each other, coordinate, and work as a team. Cl
   │                                                                       │
   │  Routes messages, manages channels, stores memory, pushes events      │
   │  Routes terminal I/O between landlords and dashboard                  │
-  └───────────────────────────┬──────────────────────┬────────────────────┘
-                              │                      │
-                    ┌─────────▼──────────┐  ┌───────▼───────────┐
-                    │  Landlord (Rust)   │  │  Landlord (Rust)  │
-                    │  Machine A         │  │  Machine B        │
-                    │  PTY → xterm.js    │  │  PTY → xterm.js   │
-                    │  Local gateway     │  │  Local gateway    │
-                    └────────────────────┘  └───────────────────┘
+  └───────────────────┬──────────────────────┬────────────────────────────┘
+                      │                      │
+            ┌─────────▼──────────┐  ┌───────▼───────────┐
+            │  Landlord (Rust)   │  │  Landlord (Rust)  │
+            │  Machine A         │  │  Machine B        │
+            │  PTY → xterm.js    │  │  PTY → xterm.js   │
+            │  Local gateway     │  │  Local gateway    │
+            └────────────────────┘  └───────────────────┘
 ```
 
 ## Features
@@ -36,15 +36,18 @@ Let your AI coding instances find each other, coordinate, and work as a team. Cl
 - **Channel isolation** — separate workstreams in named channels with independent memory
 - **WebSocket push** — instant message delivery via persistent WebSocket (HTTP polling fallback)
 - **Shared memory** — per-channel key-value store for plans, findings, status
-- **File sharing** — upload/download files and folders between agents
-- **Web dashboard** — real-time peer visualization, role assignment, message log, memory browser
-- **Live terminals** — landlord spawns agents with PTYs, terminal output streamed to xterm.js panels in the dashboard
-- **Approval-based auth** — new peers held pending until dashboard approval; local peers auto-approved
-- **Idle/stall detection** — MCP server detects unresponsive agents and alerts Master
+- **File sharing** — upload/download files and folders between agents, with versioning and SHA-256 verification
+- **Web dashboard** — real-time peer visualization, role assignment, message log with markdown rendering, memory browser
+- **Live terminals** — landlord spawns agents with PTYs, terminal output buffered and streamed to xterm.js panels in the dashboard (tab or grid view, drag-and-drop reorder, rename)
+- **Stale & zombie detection** — terminals with no output for 60s flagged as stale; agents whose landlord is disconnected auto-cleaned
+- **Budget system** — per-role credit pricing, running cost tracking, budget cap enforced on hire
+- **Approval-based auth** — new peers held pending until dashboard approval; local peers auto-approved; landlord mutual key authentication for reconnects
+- **Idle/stall detection** — MCP server detects unresponsive agents (30s nudge, 60s Master alert)
 - **Token tracking** — client-side byte estimation reported via heartbeat
 - **Landlord metrics** — CPU, RAM, and disk usage reported every 5s per landlord
 - **Hire Worker from Master role** — Master agent can hire workers on the best available landlord via `hire_worker` tool
-- **Drag-and-drop terminals** — reorder terminal panels by dragging
+- **Spawn allowlisting** — only approved commands (`claude`, `codex`, `opencode`, `cursor`, `bun`, `node`) can be spawned on landlords
+- **Channel reset** — full reset clears memory, undelivered messages, and abort flag for a channel
 
 ---
 
@@ -128,25 +131,59 @@ export HIVE_HOST=http://<broker-host>:7899
 export AGENT_HIVE_TOKEN=<master-key>
 ```
 
+On first connection, the landlord registers with the broker and appears as **pending** in the dashboard. Once approved, a mutual key is issued and saved to `~/.agent-hive-landlord.key` for automatic reconnection without re-approval. If rejected, identity files are deleted and the landlord exits.
+
 Once connected, click **Hire Worker** in the dashboard header to spawn an agent. Select a landlord, enter a command (e.g. `claude`, `cmd.exe`, `bash`), and a live terminal panel appears below the messages section.
 
 The Master role agent can also hire workers programmatically via the `hire_worker` tool, which auto-selects the landlord with the most free resources.
+
+### Landlord CLI
+
+When running interactively (stdin open), the landlord accepts these commands:
+
+```
+spawn <command> [args...]   # Spawn an agent process (e.g. spawn claude)
+kill <agent-id>             # Kill a running agent
+list                        # List all running agents with IDs and PIDs
+status                      # Show bridge ID and agent count
+quit / exit                 # Graceful shutdown (kills all agents)
+```
+
+When stdin is closed (running as a service/daemon), the landlord enters a passive polling loop — it keeps agents running and reports stats, but doesn't accept commands. Agent lifecycle is then managed via the dashboard or the Master agent's `hire_worker`/`kill_agent` tools.
+
+### Landlord CLI flags
+
+```
+agent-hive-landlord [OPTIONS]
+
+Options:
+  --host <url>         Broker URL (overrides HIVE_HOST env var)
+  --coworker <path>    Path to coworker binary (auto-detected if not set)
+```
+
+### Landlord file artifacts
+
+| File | Purpose |
+|------|---------|
+| `~/.agent-hive-landlord-id` | Persistent landlord identity (8-hex UUID) |
+| `~/.agent-hive-landlord.key` | Mutual key for broker reconnection (issued on approval) |
+| `~/.freecc.json` | Auto-configured MCP server entry for the coworker binary |
 
 ---
 
 ## Roles
 
-Agent Hive includes 7 preset roles with structured coordination prompts. Assign them via the dashboard or programmatically.
+Agent Hive includes 7 preset roles with structured coordination prompts. Assign them via the dashboard, the `assign_role` tool, or the CLI.
 
 | Role | Description | Key behaviors |
 |------|-------------|---------------|
-| **Master** | Coordinator — plans, assigns, monitors | Only uses Agent Hive tools; never executes work; progress enforcement |
+| **Master** | Coordinator — plans, assigns, monitors | Only uses Agent Hive tools; never executes work; hires workers, assigns roles; progress enforcement; credit cost tracking |
 | **Worker** | General executor — coding, testing | ACKs tasks; Advisor review gate; headless mode |
-| **Executor** | Implementation specialist | Same as Worker with escalation for hard decisions |
-| **Vuln Researcher** | Security auditor — decompile, taint trace | Waits for Master assignment; 5-phase workflow; Validator gate |
-| **Vuln Validator** | Adversarial verifier | Severity-tiered deep review; ACK/CHALLENGE/VERDICT protocol |
-| **Sys Admin** | Infrastructure — labs, services, deploys | ACKs all requests; lab provisioning; security flags |
-| **Advisor** | Strategic oracle — reviews, advice | ACKs requests; APPROVED/FEEDBACK on results |
+| **Executor** | Implementation specialist | Same as Worker with escalation for architectural decisions |
+| **Vuln Researcher** | Security auditor — decompile, taint trace | Waits for Master assignment; 5-phase workflow (recon → lab → decompile → taint trace → report); Validator gate |
+| **Vuln Validator** | Adversarial verifier | Severity-tiered deep review; ACK/CHALLENGE/DEFENSE/VERDICT protocol; max 3 rounds |
+| **Sys Admin** | Infrastructure — labs, services, deploys | ACKs all requests; lab provisioning; security flags; idempotent execution |
+| **Advisor** | Strategic oracle — reviews, advice | ACKs requests; APPROVED/FEEDBACK on results; max 2 consultations per task before escalating to Master |
 
 ### Role interactions
 
@@ -171,24 +208,41 @@ User
 
 ## Tools
 
-| Tool | Description |
-|------|-------------|
-| `list_peers` | Find peers. Scope: `channel` (recommended), `all`, `directory`, `repo` |
-| `send_message` | Send to a peer by ID. Delivered instantly via WebSocket |
-| `broadcast_message` | Send to all peers in your channel |
-| `check_messages` | Manual poll (fallback when WebSocket is down) |
-| `set_summary` | Set a 1–2 sentence work description, visible to peers |
-| `list_channels` | See all channels and their members |
-| `join_channel` / `leave_channel` | Switch channels |
-| `memory_set` / `memory_get` | Shared per-channel key-value store |
-| `memory_list` / `memory_delete` | Browse and manage channel memory |
-| `upload_file` / `download_file` | Share files via the broker |
-| `upload_folder` / `download_folder` | Share zipped folders |
-| `list_files` | Browse shared files in the channel |
-| `report_issue` | Auto-forwards concern to Master (for headless agents) |
-| `force_stop` / `resume_work` | Master-only abort/resume signals |
-| `hire_worker` | Master-only: spawn an agent on the best available landlord |
-| `kill_agent` | Master-only: kill a stuck agent by peer ID |
+The Rust coworker binary exposes 23 MCP tools. The TypeScript server exposes a core subset (12 tools). Tools marked **Rust only** are available in the coworker binary but not in `server.ts`.
+
+| Tool | Description | Rust only |
+|------|-------------|-----------|
+| `list_peers` | Find peers. Scope: `channel` (recommended), `all`, `network`, `directory`, `repo` | |
+| `send_message` | Send to a peer by ID. Delivered instantly via WebSocket | |
+| `broadcast_message` | Send to all peers in your channel | ✓ |
+| `check_messages` | Manual poll (fallback when WebSocket is down) | |
+| `set_summary` | Set a 1–2 sentence work description, visible to peers | |
+| `list_channels` | See all channels and their members | |
+| `join_channel` / `leave_channel` | Switch channels | |
+| `memory_set` / `memory_get` | Shared per-channel key-value store | |
+| `memory_list` / `memory_delete` | Browse and manage channel memory | |
+| `upload_file` / `download_file` | Share files via the broker (versioned, SHA-256) | ✓ |
+| `upload_folder` / `download_folder` | Share zipped folders | ✓ |
+| `list_files` | Browse shared files in the channel | ✓ |
+| `report_issue` | Auto-forwards concern to Master (for headless agents) | ✓ |
+| `force_stop` / `resume_work` | Master-only abort/resume signals | ✓ |
+| `hire_worker` | Master-only: spawn an agent on the best available landlord | ✓ |
+| `kill_agent` | Master-only: kill a stuck agent by peer ID | ✓ |
+| `assign_role` | Assign a role to an agent by peer ID (requires master key) | ✓ |
+| `set_channel` | Move an agent to a different channel by peer ID (requires master key) | ✓ |
+
+---
+
+## Budget system
+
+Agent Hive tracks a credit budget for agent costs. Each role has a per-hour price. When the Master hires a worker, the system checks that the running cost plus the new agent's cost stays within the total budget.
+
+- **Total budget** — set via the dashboard or `/budget/set` API
+- **Per-role prices** — configurable via the dashboard or `/budget/set-prices` API
+- **Running cost** — automatically calculated from active agents
+- **Budget bar** — displayed in the dashboard header, clickable to open budget settings
+
+The `hire_worker` tool performs a pre-flight budget check. If the hire would exceed the budget, it is rejected with a message.
 
 ---
 
@@ -218,9 +272,13 @@ Dashboard ──WS──► Broker ──WS──► Landlord ──PTY──►
 - **Terminal output**: PTY → hex-encoded JSON → landlord WS → broker → broadcast to dashboards → `xterm.write()`
 - **Terminal input**: `xterm.onData()` → dashboard WS → broker → landlord WS → PTY writer
 - **Resize**: `ResizeObserver` → dashboard WS → broker → landlord WS → PTY resize
+- **Terminal buffer**: up to 3000 chunks (~500KB) buffered per session for dashboard reconnect replay
 - Landlord agents are auto-approved and kept alive by broker ping (every 5s)
 - Each landlord also runs a local HTTP gateway on port 17900 for coworker MCP servers
-- Landlords report system metrics (CPU, RAM, disk) every 5s to the broker
+- Landlords report system metrics (CPU, RAM, disk) + live agent IDs every 5s to the broker
+- **Landlord auth**: three modes — master key (legacy), mutual key (returning, persisted in `~/.agent-hive-landlord.key`), or new registration (pending approval)
+- **Process tree kill**: on Windows uses `taskkill /T /F` for full tree termination; on Unix uses process group signaling
+- **Agent re-registration**: after broker reconnect, all still-running agents are automatically re-registered
 
 ---
 
@@ -235,11 +293,14 @@ Dashboard ──WS──► Broker ──WS──► Landlord ──PTY──►
                     │    + dashboard)               │
                     │  Web UI (React + xterm.js)    │
                     │  Auto-builds UI on startup    │
+                    │  Budget tracking              │
+                    │  Zombie/stale detection       │
                     └──────┬──────────────────┬────┘
                            │                  │
               MCP server (stdio)     Landlord (Rust binary)
               Rust or TypeScript     Spawns PTYs, streams I/O
               Reports metrics/5s     Auto-configures MCP
+              Idle/stall detection   Mutual key auth
                     │                       │
               Claude Code              Codex / OpenCode
 ```
@@ -248,16 +309,16 @@ Dashboard ──WS──► Broker ──WS──► Landlord ──PTY──►
 
 | File | Purpose |
 |------|---------|
-| `broker.ts` | HTTP + WebSocket server, SQLite, auth, dashboard, landlord routing, UI auto-build |
-| `server.ts` | TypeScript MCP stdio server (one per coding session) |
-| `coworker/src/main.rs` | Rust MCP stdio server — same features, ~3 MB binary |
-| `bridge/` | Rust landlord binary — PTY spawn, terminal I/O, system metrics, local HTTP gateway |
-| `shared/types.ts` | Shared types for broker API and WebSocket events |
+| `broker.ts` | HTTP + WebSocket server, SQLite, auth, dashboard, landlord routing, UI auto-build, budget, zombie detection |
+| `server.ts` | TypeScript MCP stdio server (one per coding session) — core 12 tools |
+| `coworker/src/main.rs` | Rust MCP stdio server — full 23 tools, idle/stall detection, token tracking |
+| `bridge/` | Rust landlord binary — PTY spawn, terminal I/O, system metrics, local HTTP gateway, mutual key auth |
+| `shared/types.ts` | Shared types for broker API, WebSocket events, budget info |
 | `shared/auth.ts` | Master key management, token generation |
-| `shared/summarize.ts` | Auto-summary generation via OpenAI |
+| `shared/summarize.ts` | Auto-summary generation via OpenAI (TypeScript server only) |
 | `cli.ts` | Admin CLI |
 | `ui/roles.ts` | Role prompt definitions (all 7 roles) |
-| `ui/app.tsx` | React dashboard with xterm.js terminal panels |
+| `ui/app.tsx` | React dashboard with xterm.js terminal panels, budget bar, drag-and-drop |
 | `ui/app.css` | Dashboard styles |
 
 ---
@@ -266,17 +327,26 @@ Dashboard ──WS──► Broker ──WS──► Landlord ──PTY──►
 
 The dashboard (served at `http://<broker>:7899`) provides:
 
-- **Peer grid** — connected instances with pixel avatars, role badges, activity bubbles
-- **Peer cards** — set roles, move to channels, view token usage
-- **Channel sidebar** — create/remove channels, click peers to configure
+- **Login screen** — master key authentication with session persistence
+- **Peer grid** — connected instances with deterministic color-coded pixel avatars, role emoji badges, activity state bubbles (thinking/working/idle/offline)
+- **Peer cards** — set roles (7 preset buttons + custom prompt textarea), move to channels, view token usage, remove from channel/network
+- **Channel sidebar** — create/remove channels, expand to see members, click to open role popup
 - **Landlords panel** — view connected landlords with CPU/RAM/disk stats, approve/reject pending landlords
-- **Message log** — paginated (200/page), real-time via WebSocket
-- **Live terminals** — xterm.js panels below the messages section, with full PTY I/O
+- **Message log** — paginated (200/page), real-time via WebSocket, markdown rendering (`marked` + `DOMPurify`), new message highlight animation, clear all button
+- **Channel memory** — browsable KV store with value inspector (shows author, timestamp, size)
+- **File browser** — shared files with versioning, type icons, download links, delete
+- **Budget bar** — credit cost display in header, click to open per-role price settings
+- **Live terminals** — xterm.js panels with Tokyo Night theme, Unicode 11 support, 5000-line scrollback
+  - **Tab view** — single terminal visible with tab bar to switch
+  - **Grid view** — all terminals visible simultaneously
+  - **Drag-and-drop** — reorder terminal panels by dragging in grid mode
+  - **Rename** — click terminal name to edit inline
+  - **Stale detection** — terminals with no output for 60s show orange stale indicator with refresh/recheck button
+  - **Buffer replay** — terminal history replayed on dashboard reconnect
 - **Hire Worker** — spawn dialog to launch agents on connected landlords
-- **Channel memory** — browsable KV store with value inspector
-- **File browser** — shared files with versioning
 - **Clear Inactive** — removes offline peers from the current channel
-- **Move peers** — drag peers between channels from the role popup
+- **Resync** — reconnects all terminals from landlords
+- **Clean Zombies** — removes agents whose landlord is disconnected
 
 ---
 
@@ -302,6 +372,14 @@ bun cli.ts kill-broker         # stop the broker daemon
 4. **Remote peers** → appear in dashboard as pending; admin approves/rejects
 5. Once approved, the peer can use all API endpoints
 6. WebSocket upgrade at `/ws/agent?token=...` for push delivery
+7. **Offline revival** — offline peers that start sending heartbeats again are auto-revived
+
+### Landlord auth
+
+1. New landlord connects via WebSocket → appears as **pending** in dashboard
+2. Admin approves → broker issues a **mutual key**, saved to `~/.agent-hive-landlord.key`
+3. On reconnect, landlord presents mutual key → auto-approved without dashboard interaction
+4. If rejected, identity files are deleted and the landlord exits
 
 ---
 
@@ -315,18 +393,21 @@ bun cli.ts kill-broker         # stop the broker daemon
 | `HIVE_HOST` | `http://127.0.0.1:7899` | Broker URL (for MCP clients and landlords) |
 | `AGENT_HIVE_TOKEN` | (from `~/.agent-hive.key`) | Override auth token |
 | `AGENT_HIVE_HARNESS` | `claude-code` | Harness identifier |
+| `AGENT_HIVE_NAME` | (auto-generated) | Override agent name |
 | `LANDLORD_LOCAL_PORT` | `17900` | Landlord local HTTP gateway port |
 | `COWORKER_PATH` | (auto-detected) | Override path to coworker binary for auto MCP config |
-| `OPENAI_API_KEY` | — | Enables auto-summary on startup |
+| `OPENAI_API_KEY` | — | Enables auto-summary on startup (TypeScript server only) |
 
 ---
 
 ## Agent names
 
-Each agent gets a memorable name (`crimson-falcon`, `void-oracle`, etc.) stored in `.agent-hive/name` at the git root. Stable per project — same name on every reconnect.
+Each agent gets a memorable name (`crimson-falcon`, `void-oracle`, etc.) generated from a hash of PID + timestamp. The TypeScript server persists names per project in `.agent-hive/name` at the git root. The Rust coworker generates a fresh unique name on each connection. Override with:
 
 ```bash
-echo "my-custom-name" > .agent-hive/name  # override
+export AGENT_HIVE_NAME="my-custom-name"
+# or for TypeScript server:
+echo "my-custom-name" > .agent-hive/name
 ```
 
 ---
